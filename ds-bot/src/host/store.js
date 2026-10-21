@@ -277,6 +277,8 @@ export function install(rt) {
     }
     return warnReadOnly()
   }
+  const hasExclusiveWriter = () => !stopped && !lockBroken && stuck === undefined &&
+    holder === undefined && lock.owns()
 
   const save = () => {
     if (stopped) return writing
@@ -407,7 +409,7 @@ export function install(rt) {
   const isAdminOf = (room, id) => id !== undefined && room.admin === id
 
   Object.assign(rt, {
-    state, load, save, refresh, readOnly, own,
+    state, load, save, refresh, readOnly, hasExclusiveWriter, own,
     botOf, roomOf, isMain, chatOf, selfOf, isBotSession,
     chatOwners, groupOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,

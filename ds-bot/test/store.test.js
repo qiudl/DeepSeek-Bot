@@ -72,6 +72,15 @@ test('a failed state write rejects and leaves the saved file unchanged', async (
   assert.deepEqual(fs.readFileSync(statePath), original)
 })
 
+test('external callers only see a healthy exclusive writer', async (t) => {
+  const { rt, dispose } = runtime(t)
+  assert.equal(rt.hasExclusiveWriter(), false)
+  await rt.load()
+  assert.equal(rt.hasExclusiveWriter(), true)
+  await dispose()
+  assert.equal(rt.hasExclusiveWriter(), false)
+})
+
 test('a failed migration write warns but load() still resolves', async (t) => {
   const { rt, statePath, warnings } = runtime(t, { version: 1, mainBotId: 'chief', bots: { chief: { id: 'chief', name: 'Chief' } } })
   // The migrated team's first write fails: a directory takes the temp file's path.
@@ -186,6 +195,7 @@ test('an unusable state lock warns and keeps the team saving', async (t) => {
   try {
     await rt.load()
     assert.equal(rt.readOnly(), undefined)
+    assert.equal(rt.hasExclusiveWriter(), false)
     assert.equal(warnings.filter(([template]) => template.includes('cannot lock')).length, 1)
     rt.state.prefs.marker = 'saved without a lock'
     await rt.save()
