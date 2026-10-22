@@ -19,7 +19,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:1, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, rooms:Record<string,any>, agents:Record<string,any>, capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: 1, mainBotIds: [], bots: {}, rooms: {}, agents: {}, capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, questions: {}, views: {}, prefs: {}, switching: {}, revision: 0 }
+  const state = { version: 1, mainBotIds: [], bots: {}, rooms: {}, agents: {}, capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, questions: {}, views: {}, prefs: {}, switching: {}, externalGroup: { cycles: {}, deliveries: {}, results: [], nextResultSeq: 0 }, revision: 0 }
   let loaded = null
   let writing = Promise.resolve()
   const { warn } = rt
@@ -161,6 +161,11 @@ export function install(rt) {
     }
     if (state.works === null || typeof state.works !== 'object' || Array.isArray(state.works)) state.works = {}
     if (state.views === null || typeof state.views !== 'object' || Array.isArray(state.views)) state.views = {}
+    if (state.externalGroup === null || typeof state.externalGroup !== 'object' || Array.isArray(state.externalGroup)) state.externalGroup = { cycles: {}, deliveries: {}, results: [], nextResultSeq: 0 }
+    if (state.externalGroup.cycles === null || typeof state.externalGroup.cycles !== 'object' || Array.isArray(state.externalGroup.cycles)) state.externalGroup.cycles = {}
+    if (state.externalGroup.deliveries === null || typeof state.externalGroup.deliveries !== 'object' || Array.isArray(state.externalGroup.deliveries)) state.externalGroup.deliveries = {}
+    if (!Array.isArray(state.externalGroup.results)) state.externalGroup.results = []
+    if (!Number.isSafeInteger(state.externalGroup.nextResultSeq) || state.externalGroup.nextResultSeq < 0) state.externalGroup.nextResultSeq = 0
     // LEGACY: Bots no longer count the rounds they start in a group.
     for (const room of Object.values(state.rooms)) {
       if (!('botRounds' in room)) continue
@@ -344,11 +349,13 @@ export function install(rt) {
   const groupOwners = new Map()
   /** @type {Map<string, {botId:string, roomId?:string}>} */
   const pastOwners = new Map()
+  const externalOwners = new Map()
   const chatOf = botId => botOf(botId)?.sessionId ?? botId
   const indexSessions = () => {
     chatOwners.clear()
     groupOwners.clear()
     pastOwners.clear()
+    externalOwners.clear()
     for (const bot of Object.values(state.bots)) {
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
@@ -359,14 +366,17 @@ export function install(rt) {
       }
       for (const [botId, sessionId] of Object.entries(room.sessions ?? {})) groupOwners.set(sessionId, { botId, roomId: room.id })
     }
+    for (const cycle of Object.values(state.externalGroup?.cycles ?? {})) {
+      if (cycle && typeof cycle.sessionId === 'string' && typeof cycle.botId === 'string') externalOwners.set(cycle.sessionId, cycle.botId)
+    }
     // The agents module owns the DSH Agent session index; it installs after this.
     rt.indexAgents?.()
   }
   // The Bot a Session speaks for: its own chat, one of its group Sessions, or an
   // earlier segment of either.
-  const selfOf = id => chatOwners.get(id) ?? groupOwners.get(id)?.botId ?? pastOwners.get(id)?.botId
+  const selfOf = id => chatOwners.get(id) ?? groupOwners.get(id)?.botId ?? externalOwners.get(id) ?? pastOwners.get(id)?.botId
   // A Session where the Bot speaks now, as opposed to an archived segment.
-  const isBotSession = id => chatOwners.has(id) || groupOwners.has(id)
+  const isBotSession = id => chatOwners.has(id) || groupOwners.has(id) || externalOwners.has(id)
   const groupSessionsOf = botId => Object.values(state.rooms).map(room => room.sessions?.[botId]).filter(Boolean)
   const dropGroupSession = (room, botId) => {
     const sessionId = room.sessions?.[botId]
@@ -411,7 +421,7 @@ export function install(rt) {
   Object.assign(rt, {
     state, load, save, refresh, readOnly, hasExclusiveWriter, own,
     botOf, roomOf, isMain, chatOf, selfOf, isBotSession,
-    chatOwners, groupOwners, pastOwners,
+    chatOwners, groupOwners, pastOwners, externalOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
   })
 }

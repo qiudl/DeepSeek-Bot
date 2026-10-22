@@ -81,6 +81,22 @@ test('external callers only see a healthy exclusive writer', async (t) => {
   assert.equal(rt.hasExclusiveWriter(), false)
 })
 
+test('an external group Session keeps its Bot identity without joining a DS Bot room', async (t) => {
+  const { rt, statePath } = runtime(t)
+  await rt.load()
+  rt.state.bots.bot_1 = { id: 'bot_1', name: 'Owner Bot', capabilities: [] }
+  rt.state.externalGroup.cycles['group:bot_1:1'] = { groupId: 'group', botId: 'bot_1', memberCycle: 1,
+    sessionId: 'external-session', revoked: false }
+  await rt.save()
+  assert.equal(rt.selfOf('external-session'), 'bot_1')
+  assert.equal(rt.isBotSession('external-session'), true)
+  assert.equal(rt.groupOwners.has('external-session'), false)
+  const reopened = runtime(t, JSON.parse(fs.readFileSync(statePath, 'utf8')))
+  await reopened.rt.load()
+  assert.equal(reopened.rt.selfOf('external-session'), 'bot_1')
+  assert.equal(reopened.rt.groupOwners.has('external-session'), false)
+})
+
 test('a failed migration write warns but load() still resolves', async (t) => {
   const { rt, statePath, warnings } = runtime(t, { version: 1, mainBotId: 'chief', bots: { chief: { id: 'chief', name: 'Chief' } } })
   // The migrated team's first write fails: a directory takes the temp file's path.
