@@ -108,6 +108,20 @@ export function install(rt) {
   })
 
   rt.ctx.provide('dsBotSlarkExternalGroup', {
+    async listLocalBots({ afterBotId = '', limit = 50 } = {}) {
+      if (afterBotId !== '' && (typeof afterBotId !== 'string' || !BOT_ID.test(afterBotId)))
+        throw Error('invalid_bot_roster_page')
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+        throw Error('invalid_bot_roster_page')
+      if (!await writer()) return null
+      const ids = Object.keys(rt.state.bots ?? {}).sort()
+      const candidates = ids.filter(id => id > afterBotId).map(id => validBot(id))
+        .filter(bot => bot !== null && Buffer.byteLength(bot.name, 'utf8') <= 512)
+      const page = candidates.slice(0, limit)
+      return { bots: page.map(bot => ({ botId: bot.id,
+        actorRef: `deepseek-bot:${bot.id}`, displayName: bot.name })),
+      nextCursor: candidates.length > limit ? page.at(-1).id : null }
+    },
     async resolveLocalBot(botId) {
       if (!await writer()) return null
       const bot = validBot(botId)

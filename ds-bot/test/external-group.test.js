@@ -16,6 +16,7 @@ function fixture(enabled = true, saved) {
   const externalOwners = new Map()
   const state = saved ? structuredClone(saved) : { externalGroup: { cycles: {}, deliveries: {}, results: [], nextResultSeq: 0 } }
   const bots = { bot_1: { id: 'bot_1', name: 'Owner Bot', memory: 'private' } }
+  state.bots = bots
   const rt = {
     config: { slarkExternalGroup: enabled },
     ctx: { provide(name, value) { assert.equal(name, 'dsBotSlarkExternalGroup'); service = value },
@@ -67,6 +68,28 @@ test('internal resolver returns only a current local Bot identity', async () => 
   f.bots.bot_1.name = 'Owner Bot'
   f.setExclusiveWriter(false)
   assert.equal(await f.service.resolveLocalBot('bot_1'), null)
+})
+
+test('external roster pages only current valid Bots while the Profile is the exclusive writer', async () => {
+  const f = fixture()
+  f.bots.bot_3 = { id: 'bot_3', name: 'Third Bot' }
+  f.bots.bot_2 = { id: 'bot_2', name: 'Second Bot' }
+  f.bots.bad = { id: 'other', name: 'Wrong identity' }
+  f.bots.empty = { id: 'empty', name: ' ' }
+  assert.deepEqual(await f.service.listLocalBots({ limit: 2 }), {
+    bots: [
+      { botId: 'bot_1', actorRef: 'deepseek-bot:bot_1', displayName: 'Owner Bot' },
+      { botId: 'bot_2', actorRef: 'deepseek-bot:bot_2', displayName: 'Second Bot' },
+    ], nextCursor: 'bot_2',
+  })
+  assert.deepEqual(await f.service.listLocalBots({ afterBotId: 'bot_2', limit: 2 }), {
+    bots: [{ botId: 'bot_3', actorRef: 'deepseek-bot:bot_3', displayName: 'Third Bot' }],
+    nextCursor: null,
+  })
+  await assert.rejects(f.service.listLocalBots({ limit: 0 }), /invalid_bot_roster_page/u)
+  await assert.rejects(f.service.listLocalBots({ afterBotId: '../bot' }), /invalid_bot_roster_page/u)
+  f.setExclusiveWriter(false)
+  assert.equal(await f.service.listLocalBots({ limit: 2 }), null)
 })
 
 const input = { schemaVersion: 1, deliveryId: '11111111-1111-4111-8111-111111111111',
