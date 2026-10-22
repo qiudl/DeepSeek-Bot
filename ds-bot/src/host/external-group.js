@@ -43,6 +43,7 @@ export function install(rt) {
     rt.state.externalGroup.results.push({ id: `${deliveryId}:final`, deliveryId, groupId: record.groupId,
       botId: record.botId, memberCycle: record.memberCycle, seq, status, text: raw.slice(0, 100_000) })
     record.state = 'result_recorded'
+    record.resultStatus = status
     await rt.save()
   }
   rt.ctx.tools.guard(exec => rt.externalOwners.has(exec.agent?.id) && TEAM_TOOLS.includes(exec.name)
@@ -214,6 +215,37 @@ export function install(rt) {
           deliveryId: record.deliveryId, messageSeq: record.messageSeq,
           state: record.state, payloadDigest: record.payloadDigest,
         })), nextCursor: rows.length > limit ? page.at(-1).deliveryId : null }
+      })
+    },
+    async requestStopDelivery({ groupId, botId, memberCycle, deliveryId, requestId } = {}) {
+      return serialize(async () => {
+        if (!UUID.test(groupId ?? '') || !BOT_ID.test(botId ?? '') ||
+          !Number.isSafeInteger(memberCycle) || memberCycle < 1 ||
+          !UUID.test(deliveryId ?? '') || !UUID.test(requestId ?? '')) return { state: 'invalid' }
+        if (!await writer()) return { state: 'unavailable' }
+        const record = rt.own(rt.state.externalGroup.deliveries, deliveryId)
+        if (record === undefined || record.groupId !== groupId || record.botId !== botId ||
+          record.memberCycle !== memberCycle) return { state: 'missing' }
+        if (record.stopRequestId !== undefined && record.stopRequestId !== requestId)
+          return { state: 'conflict' }
+        if (record.stopRequestId === undefined) {
+          record.stopRequestId = requestId
+          try { await rt.save() } catch (error) { delete record.stopRequestId; throw error }
+        }
+        await recoverResult(record)
+        const terminal = () => {
+          const result = rt.state.externalGroup.results.find(item => item.deliveryId === deliveryId)
+          return record.state !== 'result_recorded' ? null : { state: 'terminal', deliveryId,
+            requestId, status: result?.status ?? record.resultStatus ?? 'unknown',
+            resultId: `${deliveryId}:final` }
+        }
+        const prior = terminal()
+        if (prior !== null) return prior
+        if (typeof rt.stopRoomTurn !== 'function') return { state: 'unavailable' }
+        const outcome = await rt.stopRoomTurn(record.sessionId, deliveryId)
+        if (outcome === 'queued_removed') await recordResult(deliveryId, '', 'stopped')
+        else await recoverResult(record)
+        return terminal() ?? { state: 'requested', deliveryId, requestId }
       })
     },
     async resultPage({ groupId, botId, memberCycle, after = 0, limit = 50 }) {

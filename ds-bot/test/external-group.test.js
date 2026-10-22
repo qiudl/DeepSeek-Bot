@@ -11,8 +11,11 @@ function fixture(enabled = true, saved) {
   let toolGuard
   let history = []
   let archiveFails = false
+  let stopOutcome = 'unknown'
+  let stopFails = false
   const sent = []
   const archiveCalls = []
+  const stopCalls = []
   const externalOwners = new Map()
   const state = saved ? structuredClone(saved) : { externalGroup: { cycles: {}, deliveries: {}, results: [], nextResultSeq: 0 } }
   const bots = { bot_1: { id: 'bot_1', name: 'Owner Bot', memory: 'private' } }
@@ -39,17 +42,21 @@ function fixture(enabled = true, saved) {
       saved = structuredClone(state)
     },
     deliver: async input => { sent.push(input); if (flushFails) throw Error('flush disconnected') },
+    stopRoomTurn: async (...args) => { stopCalls.push(args)
+      if (stopFails) throw Error('stop disconnected')
+      return stopOutcome },
     resolveAgent: async sessionId => ({ id: sessionId, ctx: { tools: { restrict: () => {} } } }),
     async *eventsBackwards() { for (const event of history) yield event },
     warn: () => {},
   }
   install(rt)
-  return { get service() { return service }, get saved() { return saved }, sent, bots, archiveCalls,
+  return { get service() { return service }, get saved() { return saved }, sent, bots, archiveCalls, stopCalls,
     guardedTool(name, sessionId) { return toolGuard({ name, agent: { id: sessionId } }) },
     emit(sessionId, event) { eventHandler({ id: sessionId }, event) },
     setHistory(events) { history = events },
     setExclusiveWriter(value) { exclusiveWriter = value }, setFlushFails(value) { flushFails = value },
-    setArchiveFails(value) { archiveFails = value } }
+    setArchiveFails(value) { archiveFails = value },
+    setStopOutcome(value) { stopOutcome = value }, setStopFails(value) { stopFails = value } }
 }
 
 test('external group service is absent unless enabled', () => {
@@ -147,6 +154,68 @@ test('in-flight inventory exposes scoped stable IDs without prompt text and keep
   f.setExclusiveWriter(false)
   assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
     memberCycle: 1 }), { state: 'unavailable' })
+})
+
+test('one stable stop request targets only its delivery and awaits terminal evidence', async () => {
+  const f = fixture()
+  const accepted = await f.service.deliver(input)
+  const request = { groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, deliveryId: input.deliveryId,
+    requestId: '33333333-3333-4333-8333-333333333333' }
+  assert.deepEqual(await f.service.requestStopDelivery({ ...request, requestId: 'bad' }), { state: 'invalid' })
+  assert.deepEqual(await f.service.requestStopDelivery({ ...request,
+    groupId: '44444444-4444-4444-8444-444444444444' }), { state: 'missing' })
+  f.setExclusiveWriter(false)
+  assert.deepEqual(await f.service.requestStopDelivery(request), { state: 'unavailable' })
+  f.setExclusiveWriter(true)
+  f.setStopOutcome('cancel_requested')
+  assert.deepEqual(await f.service.requestStopDelivery(request), { state: 'requested',
+    deliveryId: input.deliveryId, requestId: request.requestId })
+  assert.deepEqual(f.stopCalls, [[accepted.sessionId, input.deliveryId]])
+  assert.deepEqual(await f.service.requestStopDelivery({ ...request,
+    requestId: '55555555-5555-4555-8555-555555555555' }), { state: 'conflict' })
+  f.emit(accepted.sessionId, { type: 'user/message', data: { turn: 1,
+    source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } })
+  f.emit(accepted.sessionId, { type: 'turn/end', data: { turn: 1, reason: { kind: 'stopped' } } })
+  const terminal = await f.service.requestStopDelivery(request)
+  assert.deepEqual(terminal, { state: 'terminal', deliveryId: input.deliveryId,
+    requestId: request.requestId, status: 'stopped', resultId: `${input.deliveryId}:final` })
+  assert.equal(f.stopCalls.length, 1)
+  const restarted = fixture(true, f.saved)
+  assert.deepEqual(await restarted.service.requestStopDelivery(request), terminal)
+  assert.deepEqual(await restarted.service.acknowledgeResult({ ...request,
+    resultId: `${input.deliveryId}:final` }), { state: 'acknowledged' })
+  assert.deepEqual(await restarted.service.requestStopDelivery(request), terminal)
+})
+
+test('a queued delivery is confirmed stopped only after its exact inbox item is removed', async () => {
+  const f = fixture()
+  const accepted = await f.service.deliver(input)
+  f.setStopOutcome('queued_removed')
+  const request = { groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, deliveryId: input.deliveryId,
+    requestId: '33333333-3333-4333-8333-333333333333' }
+  assert.deepEqual(await f.service.requestStopDelivery(request), { state: 'terminal',
+    deliveryId: input.deliveryId, requestId: request.requestId,
+    status: 'stopped', resultId: `${input.deliveryId}:final` })
+  assert.deepEqual(f.stopCalls, [[accepted.sessionId, input.deliveryId]])
+  assert.deepEqual((await f.service.resultPage(input)).results.map(result => result.status), ['stopped'])
+})
+
+test('failed stop transport keeps its request key for retry after restart', async () => {
+  const f = fixture()
+  await f.service.deliver(input)
+  const request = { groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, deliveryId: input.deliveryId,
+    requestId: '33333333-3333-4333-8333-333333333333' }
+  f.setStopFails(true)
+  await assert.rejects(f.service.requestStopDelivery(request), /stop disconnected/u)
+  assert.equal(f.saved.externalGroup.deliveries[input.deliveryId].stopRequestId, request.requestId)
+  const restarted = fixture(true, f.saved)
+  restarted.setStopOutcome('queued_removed')
+  assert.equal((await restarted.service.requestStopDelivery(request)).state, 'terminal')
+  assert.deepEqual(await restarted.service.requestStopDelivery({ ...request,
+    requestId: '55555555-5555-4555-8555-555555555555' }), { state: 'conflict' })
 })
 
 test('writer loss and malformed scope cannot create external group sessions', async () => {

@@ -91,15 +91,19 @@ export function install(rt) {
     stoppedRoomTurns.add(exchangeId)
     if (stoppedRoomTurns.size > STOPPED_KEPT) stoppedRoomTurns.delete(stoppedRoomTurns.values().next().value)
     const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
-    if (agent === undefined) return
+    if (agent === undefined) return 'unknown'
     const entry = live.get(sessionId)
     if (entry?.turn !== undefined && entry.info?.exchangeId === exchangeId) {
       agent.cancel({ kind: 'hook', reason: 'ds-bot/stopped' })
-      return
+      return 'cancel_requested'
     }
     for (const message of [...(agent.inbox?.nextStep ?? []), ...(agent.inbox?.nextTurn ?? [])]) {
-      if (message.source?.exchangeId === exchangeId && agent.inbox.remove(message.id)) stoppedRoomTurns.delete(exchangeId)
+      if (message.source?.exchangeId === exchangeId && agent.inbox.remove(message.id)) {
+        stoppedRoomTurns.delete(exchangeId)
+        return 'queued_removed'
+      }
     }
+    return 'unknown'
   }
 
   const liveOf = id => {
