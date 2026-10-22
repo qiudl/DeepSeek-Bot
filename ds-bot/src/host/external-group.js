@@ -30,6 +30,7 @@ export function install(rt) {
   ])).digest('hex')
   const receipt = record => record === undefined ? { state: 'missing' }
     : { state: record.state, deliveryId: record.deliveryId,
+      groupId: record.groupId, botId: record.botId, memberCycle: record.memberCycle,
       payloadDigest: record.payloadDigest, sessionId: record.sessionId,
       ...(record.state === 'result_recorded' ? { resultId: `${record.deliveryId}:final` } : {}) }
   const live = new Map()
@@ -167,10 +168,15 @@ export function install(rt) {
         return receipt(record)
       })
     },
-    async receipt(deliveryId) {
+    async receipt({ deliveryId, groupId, botId, memberCycle } = {}) {
       return serialize(async () => {
-        if (!UUID.test(deliveryId ?? '') || !await writer()) return { state: 'unavailable' }
+        if (!UUID.test(deliveryId ?? '') || !UUID.test(groupId ?? '') ||
+          !BOT_ID.test(botId ?? '') || !Number.isSafeInteger(memberCycle) ||
+          memberCycle < 1) return { state: 'invalid' }
+        if (!await writer()) return { state: 'unavailable' }
         const record = rt.own(rt.state.externalGroup.deliveries, deliveryId)
+        if (record !== undefined && (record.groupId !== groupId || record.botId !== botId ||
+          record.memberCycle !== memberCycle)) return { state: 'missing' }
         if (record !== undefined) await recoverResult(record)
         return receipt(record)
       })

@@ -71,6 +71,7 @@ test('external group delivery is durable before flush and replays only its recei
   const first = fixture()
   const accepted = await first.service.deliver(input)
   assert.deepEqual(accepted, { state: 'accepted', deliveryId: input.deliveryId,
+    groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
     payloadDigest: input.payloadDigest, sessionId: 'session-1' })
   assert.equal(first.sent.length, 1)
   assert.match(first.guardedTool('create_bot', accepted.sessionId), /unavailable/u)
@@ -78,7 +79,9 @@ test('external group delivery is durable before flush and replays only its recei
   assert.deepEqual(await first.service.deliver({ ...input,
     deliveryId: '33333333-3333-4333-8333-333333333333', messageSeq: 8 }), { state: 'busy' })
   const afterRestart = fixture(true, first.saved)
-  assert.deepEqual(await afterRestart.service.receipt(input.deliveryId), accepted)
+  assert.deepEqual(await afterRestart.service.receipt(input), accepted)
+  assert.deepEqual(await afterRestart.service.receipt({ ...input,
+    groupId: '44444444-4444-4444-8444-444444444444' }), { state: 'missing' })
   assert.deepEqual(await afterRestart.service.deliver(input), accepted)
   assert.equal(afterRestart.sent.length, 0)
   assert.deepEqual(await afterRestart.service.deliver({ ...input, text: 'Run a different task.' }), { state: 'conflict' })
@@ -117,8 +120,9 @@ test('finished Bot turn enters a stable result page and revoked cycle rejects ne
   assert.deepEqual(page, { state: 'ok', results: [{ id: `${input.deliveryId}:final`, deliveryId: input.deliveryId,
     groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
     seq: 1, status: 'completed', text: 'Plan checked.' }], next: 1 })
-  assert.deepEqual(await f.service.receipt(input.deliveryId), {
+  assert.deepEqual(await f.service.receipt(input), {
     state: 'result_recorded', deliveryId: input.deliveryId,
+    groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
     payloadDigest: input.payloadDigest, sessionId: accepted.sessionId,
     resultId: `${input.deliveryId}:final`,
   })
@@ -143,6 +147,6 @@ test('result page recovers a completed turn from DSH Session history after Host 
   ])
   const page = await restarted.service.resultPage(input)
   assert.equal(page.results[0].text, 'Recovered result.')
-  assert.equal((await restarted.service.receipt(input.deliveryId)).state, 'result_recorded')
+  assert.equal((await restarted.service.receipt(input)).state, 'result_recorded')
   assert.equal(restarted.sent.length, 0)
 })
