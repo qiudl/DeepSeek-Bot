@@ -29,7 +29,9 @@ export function install(rt) {
     input.groupId, input.botId, input.memberCycle, input.messageSeq, input.text,
   ])).digest('hex')
   const receipt = record => record === undefined ? { state: 'missing' }
-    : { state: record.state, deliveryId: record.deliveryId, sessionId: record.sessionId }
+    : { state: record.state, deliveryId: record.deliveryId,
+      payloadDigest: record.payloadDigest, sessionId: record.sessionId,
+      ...(record.state === 'result_recorded' ? { resultId: `${record.deliveryId}:final` } : {}) }
   const live = new Map()
   const turnKey = (sessionId, turn) => `${sessionId}:${turn}`
   const recordResult = async (deliveryId, raw, status) => {

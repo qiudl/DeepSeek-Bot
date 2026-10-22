@@ -70,7 +70,8 @@ const input = { schemaVersion: 1, deliveryId: '11111111-1111-4111-8111-111111111
 test('external group delivery is durable before flush and replays only its receipt after restart', async () => {
   const first = fixture()
   const accepted = await first.service.deliver(input)
-  assert.deepEqual(accepted, { state: 'accepted', deliveryId: input.deliveryId, sessionId: 'session-1' })
+  assert.deepEqual(accepted, { state: 'accepted', deliveryId: input.deliveryId,
+    payloadDigest: input.payloadDigest, sessionId: 'session-1' })
   assert.equal(first.sent.length, 1)
   assert.match(first.guardedTool('create_bot', accepted.sessionId), /unavailable/u)
   assert.equal(first.guardedTool('create_bot', 'private-chat'), undefined)
@@ -116,7 +117,11 @@ test('finished Bot turn enters a stable result page and revoked cycle rejects ne
   assert.deepEqual(page, { state: 'ok', results: [{ id: `${input.deliveryId}:final`, deliveryId: input.deliveryId,
     groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
     seq: 1, status: 'completed', text: 'Plan checked.' }], next: 1 })
-  assert.equal((await f.service.receipt(input.deliveryId)).state, 'result_recorded')
+  assert.deepEqual(await f.service.receipt(input.deliveryId), {
+    state: 'result_recorded', deliveryId: input.deliveryId,
+    payloadDigest: input.payloadDigest, sessionId: accepted.sessionId,
+    resultId: `${input.deliveryId}:final`,
+  })
   const afterRestart = fixture(true, f.saved)
   assert.deepEqual(await afterRestart.service.resultPage(input), page)
   assert.deepEqual(await afterRestart.service.acknowledgeResult({ ...input,
