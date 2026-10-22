@@ -10,7 +10,9 @@ function fixture(enabled = true, saved) {
   let eventHandler
   let toolGuard
   let history = []
+  let archiveFails = false
   const sent = []
+  const archiveCalls = []
   const externalOwners = new Map()
   const state = saved ? structuredClone(saved) : { externalGroup: { cycles: {}, deliveries: {}, results: [], nextResultSeq: 0 } }
   const bots = { bot_1: { id: 'bot_1', name: 'Owner Bot', memory: 'private' } }
@@ -19,7 +21,10 @@ function fixture(enabled = true, saved) {
     ctx: { provide(name, value) { assert.equal(name, 'dsBotSlarkExternalGroup'); service = value },
       on(name, handler) { assert.equal(name, 'session/event'); eventHandler = handler },
       tools: { guard(handler) { toolGuard = handler }, schemas: () => [{ name: 'create_bot' }] },
-      workspaceRegistry: { archiveSession: async () => {} } },
+      workspaceRegistry: { archiveSession: async (...args) => {
+        archiveCalls.push(args)
+        if (archiveFails) throw Error('archive disconnected')
+      } } },
     state,
     externalOwners,
     own: (table, key) => Object.hasOwn(table, key) ? table[key] : undefined,
@@ -38,11 +43,12 @@ function fixture(enabled = true, saved) {
     warn: () => {},
   }
   install(rt)
-  return { get service() { return service }, get saved() { return saved }, sent, bots,
+  return { get service() { return service }, get saved() { return saved }, sent, bots, archiveCalls,
     guardedTool(name, sessionId) { return toolGuard({ name, agent: { id: sessionId } }) },
     emit(sessionId, event) { eventHandler({ id: sessionId }, event) },
     setHistory(events) { history = events },
-    setExclusiveWriter(value) { exclusiveWriter = value }, setFlushFails(value) { flushFails = value } }
+    setExclusiveWriter(value) { exclusiveWriter = value }, setFlushFails(value) { flushFails = value },
+    setArchiveFails(value) { archiveFails = value } }
 }
 
 test('external group service is absent unless enabled', () => {
@@ -134,6 +140,24 @@ test('finished Bot turn enters a stable result page and revoked cycle rejects ne
   assert.deepEqual(await afterRestart.service.revokeCycle({ ...input, version: 1 }), { state: 'revoked' })
   assert.deepEqual(await afterRestart.service.deliver({ ...input, deliveryId: '33333333-3333-4333-8333-333333333333' }), { state: 'revoked' })
   assert.equal(afterRestart.sent.length, 0)
+})
+
+test('failed stop request survives restart and retries the same revocation decision', async () => {
+  const f = fixture()
+  await f.service.deliver(input)
+  f.setArchiveFails(true)
+  await assert.rejects(f.service.revokeCycle({ ...input, version: 2, stopInFlight: true }),
+    /archive disconnected/u)
+  assert.equal(f.saved.externalGroup.cycles[`${input.groupId}:${input.botId}:1`].revoked, true)
+  const restarted = fixture(true, f.saved)
+  assert.deepEqual(await restarted.service.revokeCycle({ ...input, version: 2,
+    stopInFlight: true }), { state: 'revoked' })
+  assert.equal(restarted.archiveCalls.length, 1)
+  assert.deepEqual(await restarted.service.revokeCycle({ ...input, version: 2,
+    stopInFlight: true }), { state: 'revoked' })
+  assert.equal(restarted.archiveCalls.length, 1)
+  assert.deepEqual(await restarted.service.revokeCycle({ ...input, version: 2,
+    stopInFlight: false }), { state: 'conflict' })
 })
 
 test('result page recovers a completed turn from DSH Session history after Host restart', async () => {

@@ -220,11 +220,20 @@ export function install(rt) {
         if (!await writer()) return { state: 'unavailable' }
         const cycle = rt.own(rt.state.externalGroup.cycles, cycleKey({ groupId, botId, memberCycle }))
         if (cycle === undefined) return { state: 'missing' }
-        if (cycle.revoked && cycle.revocationVersion >= version) return { state: 'revoked' }
-        cycle.revoked = true
-        cycle.revocationVersion = version
-        await rt.save()
-        if (stopInFlight) await rt.ctx.workspaceRegistry.archiveSession(cycle.sessionId, { stopActivity: true })
+        if (cycle.revoked && cycle.revocationVersion > version) return { state: 'revoked' }
+        if (cycle.revoked && cycle.revocationVersion === version &&
+          Boolean(cycle.stopInFlight) !== stopInFlight) return { state: 'conflict' }
+        if (!cycle.revoked || cycle.revocationVersion < version) {
+          cycle.revoked = true
+          cycle.revocationVersion = version
+          cycle.stopInFlight = stopInFlight || cycle.stopInFlight === true
+          await rt.save()
+        }
+        if (cycle.stopInFlight === true && cycle.stopCompleted !== true) {
+          await rt.ctx.workspaceRegistry.archiveSession(cycle.sessionId, { stopActivity: true })
+          cycle.stopCompleted = true
+          await rt.save()
+        }
         return { state: 'revoked' }
       })
     },
