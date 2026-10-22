@@ -127,6 +127,28 @@ test('uncertain flush retains the key and never silently executes it twice', asy
   assert.equal(afterRestart.sent.length, 0)
 })
 
+test('in-flight inventory exposes scoped stable IDs without prompt text and keeps uncertainty visible', async () => {
+  const f = fixture()
+  f.setFlushFails(true)
+  assert.equal((await f.service.deliver(input)).state, 'indeterminate')
+  const page = await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, limit: 1 })
+  assert.deepEqual(page, { state: 'ok', deliveries: [{ deliveryId: input.deliveryId,
+    messageSeq: input.messageSeq, state: 'indeterminate', payloadDigest: input.payloadDigest }],
+  nextCursor: null })
+  assert.equal(JSON.stringify(page).includes(input.text), false)
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 2 }), { state: 'ok', deliveries: [], nextCursor: null })
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 1, afterDeliveryId: input.deliveryId }),
+  { state: 'ok', deliveries: [], nextCursor: null })
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 1, limit: 0 }), { state: 'invalid' })
+  f.setExclusiveWriter(false)
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 1 }), { state: 'unavailable' })
+})
+
 test('writer loss and malformed scope cannot create external group sessions', async () => {
   const f = fixture()
   f.setExclusiveWriter(false)

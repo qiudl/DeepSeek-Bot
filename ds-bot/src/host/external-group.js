@@ -195,6 +195,27 @@ export function install(rt) {
         return receipt(record)
       })
     },
+    // Host-only, bounded inventory for an owner's per-delivery leave decision.
+    // An unobserved completion remains pending until receipt/result recovery proves it terminal.
+    async inFlightPage({ groupId, botId, memberCycle, afterDeliveryId = '', limit = 50 } = {}) {
+      return serialize(async () => {
+        if (!UUID.test(groupId ?? '') || !BOT_ID.test(botId ?? '') ||
+          !Number.isSafeInteger(memberCycle) || memberCycle < 1 ||
+          (afterDeliveryId !== '' && !UUID.test(afterDeliveryId)) ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 100) return { state: 'invalid' }
+        if (!await writer()) return { state: 'unavailable' }
+        const rows = Object.values(rt.state.externalGroup.deliveries)
+          .filter(record => record.groupId === groupId && record.botId === botId &&
+            record.memberCycle === memberCycle && record.deliveryId > afterDeliveryId &&
+            record.state !== 'result_recorded')
+          .sort((left, right) => left.deliveryId.localeCompare(right.deliveryId))
+        const page = rows.slice(0, limit)
+        return { state: 'ok', deliveries: page.map(record => ({
+          deliveryId: record.deliveryId, messageSeq: record.messageSeq,
+          state: record.state, payloadDigest: record.payloadDigest,
+        })), nextCursor: rows.length > limit ? page.at(-1).deliveryId : null }
+      })
+    },
     async resultPage({ groupId, botId, memberCycle, after = 0, limit = 50 }) {
       return serialize(async () => {
         if (!UUID.test(groupId ?? '') || !BOT_ID.test(botId ?? '') ||
