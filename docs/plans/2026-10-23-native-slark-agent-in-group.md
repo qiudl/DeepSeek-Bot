@@ -26,3 +26,12 @@ The bridge Source operation is exposed to the DSH Host through the plugin's
 private `dsBotSlarkNativeRoom` service. It is not a browser `/api/bot` action.
 It does not make the Agent a room member or turn on message dispatch until the
 rest of the binding, roster, and result path is present and tested.
+
+The same private service now reads a bounded cursor of native user lines after
+the bridge Source is captured. It returns each original DSH message ID and room
+sequence, while Bot lines only advance the cursor. A truncated room log, a
+legacy line without an ID, or text that cannot be forwarded whole fails closed.
+The Host and Slark delivery worker must preserve this cursor and resolve
+unknown acceptance by receipt before advancing it. The current 60-line room
+log is not a durable outbox: the delivery worker needs a backed-up cursor and
+gap recovery before this path can be enabled for users.
