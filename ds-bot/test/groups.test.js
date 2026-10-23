@@ -1,10 +1,23 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { isPass, mentionsIn, referenceNote, stripOwnName } from '../src/host/groups.js'
+import { isPass, mentionsIn, openingSpeakers, referenceNote, stripOwnName } from '../src/host/groups.js'
 import { attachReference } from '../src/host/turns.js'
 
 const members = [{ name: 'M' }, { name: 'Mx' }, { name: 'K' }, { name: 'Writer' }]
 const names = ({ all, found }) => ({ all, found: found.map(member => member.name) })
+
+test('a joined Slark Agent joins ordinary turns and an explicit mention takes priority', () => {
+  const bots = [{ id: 'admin', name: 'Admin' }, { id: 'writer', name: 'Writer' }]
+  const agent = { id: 'slark-agent:member-1', name: 'Agent', kind: 'slark_agent' }
+  const room = { admin: 'admin', mode: 'everyone' }
+  const choose = opener => openingSpeakers(room, opener, [...bots, agent]).map(member => member.name)
+  assert.deepEqual(choose({ text: 'hello' }), ['Admin', 'Writer', 'Agent'])
+  assert.deepEqual(choose({ text: '@Agent please' }), ['Agent'])
+  assert.deepEqual(choose({ text: '@all please' }), ['Admin', 'Writer', 'Agent'])
+  assert.deepEqual(choose({ botId: 'writer', member: true, text: '@Agent please' }), ['Agent'])
+  assert.deepEqual(choose({ botId: agent.id, member: true, text: '@Writer please' }), ['Writer'])
+  assert.deepEqual(openingSpeakers({ ...room, mode: 'admin' }, { text: 'hello' }, [...bots, agent]).map(member => member.name), ['Admin'])
+})
 
 test('mentionsIn finds members in order, longest name first', () => {
   assert.deepEqual(names(mentionsIn('@Mx and @M, then @writer', members)), { all: false, found: ['Mx', 'M', 'Writer'] })

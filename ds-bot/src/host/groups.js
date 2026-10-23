@@ -80,6 +80,24 @@ export const mentionsIn = (text, members, references = []) => {
   return { all, found }
 }
 
+// The caller supplies the room's active participants. This also works for a
+// Slark Agent once its verified membership has been projected into the room.
+export function openingSpeakers(room, opener, everyone) {
+  const members = everyone.filter(member => member.id !== opener.botId)
+  const admin = members.find(member => member.id === room.admin)
+  if (opener.kickoff) return admin ? [admin] : []
+  if (opener.quiet) return []
+  if (opener.done) return members.filter(member => member.id === opener.askedBy)
+  const { all, found: named } = mentionsIn(opener.text, everyone, opener.references)
+  const found = named.filter(member => member.id !== opener.botId)
+  if (opener.progress) return found
+  if (opener.late) return found.length > 0 ? found : members.filter(member => member.id === opener.askedBy)
+  if (opener.member) return found
+  if (found.length > 0 && !all) return found
+  if (!all && room.mode === 'admin' && admin) return [admin]
+  return admin ? [admin, ...members.filter(member => member !== admin)] : members
+}
+
 // What the user referenced in this round, for a member that has not been shown it yet.
 export const referenceNote = references => (references?.length
   ? `Conversations the user referenced in this round:\n\n${references.map(reference => reference.text).join('\n\n')}`
@@ -400,7 +418,7 @@ export function install(rt) {
       round.replies.push({ kind: 'user', text: line.text, time: Date.now() })
       const { all, found } = mentionsIn(line.text, members)
       const note = all || found.length > 0 ? 'the user mentioned you' : 'new message from the user'
-      callMembers(round, turns, index - 1, openingSpeakers(room, { text: line.text }), note, ROOM_ADMIN_TURNS_EACH)
+      callMembers(round, turns, index - 1, opening(room, { text: line.text }), note, ROOM_ADMIN_TURNS_EACH)
     }
     // The user spoke in this room, so late results may call members again.
     room.lateRounds = 0
@@ -525,7 +543,7 @@ export function install(rt) {
       await rt.save()
       // An event post, and a member post that calls nobody, never pick the speakers
       // over a message queued with them.
-      const callsNobody = post => post.member === true && openingSpeakers(room, post).length === 0
+      const callsNobody = post => post.member === true && opening(room, post).length === 0
       const opener = posts.findLast(post => !event(post) && !callsNobody(post)) ?? posts.findLast(post => !event(post)) ?? posts.at(-1)
       const references = posts.flatMap(post => post.references ?? [])
       // A member a Bot's post calls by name works for that Bot.
@@ -536,7 +554,7 @@ export function install(rt) {
         startSeq,
         ...(opener.kickoff ? { kickoff: true } : {}),
         ...(references.length > 0 ? { references, shown: [] } : {}),
-        slots: openingSpeakers(room, opener).map(member => ({
+        slots: opening(room, opener).map(member => ({
           id: member.id, name: member.name, status: 'waiting',
           ...(opener.kickoff ? { note: 'the group was just created' } : {}),
           ...(named.includes(member) ? { by: opener.botId } : {}),
@@ -674,22 +692,8 @@ export function install(rt) {
   // the admin answers alone in admin mode, or first of everyone. What a member posts
   // after its round moved on is answered by the member that asked for it; work the
   // user asked for is left for the user to read.
-  function openingSpeakers(room, opener) {
-    const everyone = room.members.map(rt.botOf).filter(Boolean)
-    const members = everyone.filter(bot => bot.id !== opener.botId)
-    const admin = members.find(bot => rt.isAdminOf(room, bot.id))
-    if (opener.kickoff) return admin ? [admin] : []
-    if (opener.quiet) return []
-    if (opener.done) return members.filter(bot => bot.id === opener.askedBy)
-    const { all, found: named } = mentionsIn(opener.text, everyone, opener.references)
-    const found = named.filter(bot => bot.id !== opener.botId)
-    if (opener.progress) return found
-    if (opener.late) return found.length > 0 ? found : members.filter(bot => bot.id === opener.askedBy)
-    if (opener.member) return found
-    if (found.length > 0 && !all) return found
-    if (!all && room.mode === 'admin' && admin) return [admin]
-    return admin ? [admin, ...members.filter(bot => bot !== admin)] : members
-  }
+  const opening = (room, opener) => openingSpeakers(room, opener,
+    room.members.map(rt.botOf).filter(Boolean))
 
   // A Bot's message into the group's own Session, which relays it as a new round.
   // While a round runs, the post goes into the group's log and that round's replies at
