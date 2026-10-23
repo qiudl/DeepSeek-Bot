@@ -217,6 +217,9 @@ export function install(rt) {
           if (body.greet === true) await rt.greetRoom(room.id).catch(error => rt.warn('ds-bot: greeting in %s failed: %s', room.name, error))
           return ok(room)
         }
+        case 'native-room-source':
+          if (typeof rt.prepareNativeRoomSource !== 'function') return fail('Slark group binding is unavailable', 'bot/unavailable')
+          return ok(await rt.prepareNativeRoomSource(body.roomId))
         case 'update-room': {
           await rt.load()
           const { room, changes } = await rt.updateRoom(body.id, {
