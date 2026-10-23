@@ -15,7 +15,7 @@
 1. **只读盘点**：固定源 Profile 与目标团队的状态修订、文件摘要、Bot/群聊关系、Session 格式与附件可用性。未知、混合、损坏格式拒绝进入写阶段。
 2. **预览与映射**：为源 Bot、群聊和每段 Session 分配新的目标 ID，保留来源 ID 到目标 ID 的私有映射。主 Bot 改为迁入的身份；原有目标 Bot 不删除。重复请求使用同一映射与摘要。
 
-映射规划器 `ds-bot/src/host/team-import-plan.js` 只读两份团队状态，覆盖群聊自身 Session、成员当前段和旧段，并可接收目标 Profile 的全部已占用 Session ID；它在任何写入前拒绝冲突和断裂的群成员引用。规划结果不是迁移完成回执，也不创建 Session。
+映射规划器 `ds-bot/src/host/team-import-plan.js` 只读两份团队状态，覆盖群聊自身 Session、成员当前段和旧段，并可接收目标 Profile 的全部已占用 Session ID。目标的普通 DSH Agent Session 计入占用，来源的普通 DSH Agent 不作为 DS Bot 团队聊天迁入；若一个 Session 被不同聊天引用，导入前直接拒绝。规划结果不是迁移完成回执，也不创建 Session。
 3. **隔离生成**：对每段历史做格式与敏感字段审查，按 DSH 公共 API 创建目标 Session。活动段使用 `ctx.agents.create({ seed, meta, agentOptions, setup })`，通过 `ctx.agentPresets.mount()` 绑定目标 preset，随后关联 Workspace、标题、模型与权限。旧段不能误当成活动 Agent。
 4. **校验与激活**：核对消息顺序、上下文、附件引用、群聊成员、记忆版本及目标原有数据指纹。只有全部通过，才原子写入团队映射和主 Bot 选择；失败保留源与原团队入口，可安全重试。
 5. **持续运行**：目标设备单独执行回合和计划任务。远端只通过受信设备的有界读、写及回执契约访问；不能透传任意 `/api/bot` 端点、Cookie、工作目录或密钥。离线端只看加密只读副本。
@@ -28,3 +28,7 @@
 - 群聊日志、成员 Session、Bot/群/团队记忆的顺序、来源和版本是否可恢复。
 
 这些门槛通过前，不对真实 Profile 写入，也不把首次搬运视为持续同步交付。
+
+## 当前验证矩阵
+
+2026-10-23：fork `dev` 声明的 DSH `0.2.1-rc.2` 下，完整单元测试 870 通过、2 跳过、0 失败；客户端生成物检查与 lint 通过。Slark 当前固定的 DSH `0.2.1-alpha.2` 下，隔离 mock Web 烟测 52 步全部通过；完整单测有两个测试文件因该旧版本缺少 `dsh-session-reference` 和 `dsh-client-modules` 模块而不能通过。导入器尚未实现，以上结果不能当作迁移验收。

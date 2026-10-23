@@ -41,3 +41,25 @@ test('REQ-20261023-0001 rejects collisions and broken group references before wr
   broken.rooms[room].members = [helper]
   assert.throws(() => planTeamImport(broken, target, () => id('3')), /Unknown group member/u)
 })
+
+test('REQ-20261023-0001 includes ordinary DSH Agent Sessions in the target occupancy check', () => {
+  const withAgent = structuredClone(target)
+  withAgent.agents = { agent: { id: 'agent', sessions: [id('3')] } }
+  let next = 3
+  assert.throws(() => planTeamImport(source, withAgent, () => id(String(next++))), /Duplicate target Session ID/u)
+})
+
+test('REQ-20261023-0001 does not plan an ordinary DSH Agent as a Bot team chat', () => {
+  const withAgent = structuredClone(source)
+  withAgent.agents = { agent: { id: 'agent', sessions: [id('9')] } }
+  let next = 3
+  const plan = planTeamImport(withAgent, target, () => id(String(next++)))
+  assert.equal(plan.sessions[id('9')], undefined)
+})
+
+test('REQ-20261023-0001 rejects a source Session owned by two different chats', () => {
+  const shared = structuredClone(source)
+  shared.rooms[room].sessions[thanos] = current
+  let next = 3
+  assert.throws(() => planTeamImport(shared, target, () => id(String(next++))), /Session belongs to multiple chats/u)
+})
