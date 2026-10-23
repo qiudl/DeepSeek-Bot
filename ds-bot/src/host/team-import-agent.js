@@ -5,9 +5,9 @@ import { isAbsolute } from 'node:path'
 import { remapSessionEvents } from './team-import-events.js'
 
 /** A pending reservation must be inspected before a retry can create the same Session ID. */
-export async function stageImportedAgent(ctx, { sourceId, plan, events, workspace, title, model, historyOnly = false, journal }) {
+export async function stageImportedAgent(ctx, { sourceId, plan, events, workspace, title, model, historyOnly = false, attachments = [], journal }) {
   if (typeof historyOnly !== 'boolean') throw new Error('Invalid Agent stage mode')
-  const seed = remapSessionEvents(events, sourceId, plan, { active: !historyOnly })
+  const seed = remapSessionEvents(events, sourceId, plan, { active: !historyOnly, attachments })
   const targetId = plan.sessions[sourceId]
   const validModel = typeof model?.provider === 'string' && model.provider.trim() !== '' &&
     typeof model.model === 'string' && model.model.trim() !== ''
@@ -47,10 +47,10 @@ export async function stageImportedAgent(ctx, { sourceId, plan, events, workspac
 }
 
 /** DSH resolveAgent owns the write handle; callers must reuse that Agent, not resume it again. */
-export async function verifyImportedAgent(ctx, { sourceId, plan, events, mode, eventDigest }) {
+export async function verifyImportedAgent(ctx, { sourceId, plan, events, mode, eventDigest, attachments = [] }) {
   if (!['active', 'history'].includes(mode) || !/^[0-9a-f]{64}$/u.test(eventDigest ?? '') ||
       typeof ctx?.sessionController?.resolveAgent !== 'function') throw new Error('Incomplete Agent verification')
-  const seed = remapSessionEvents(events, sourceId, plan, { active: mode === 'active' })
+  const seed = remapSessionEvents(events, sourceId, plan, { active: mode === 'active', attachments })
   if (createHash('sha256').update(JSON.stringify(seed)).digest('hex') !== eventDigest) {
     throw new Error('Import source events changed')
   }

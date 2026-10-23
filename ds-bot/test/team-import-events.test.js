@@ -44,3 +44,18 @@ test('REQ-20261023-0001 refuses invalid active history and unfamiliar structural
   foreign[3].data.sessionId = sender
   assert.throws(() => remapSessionEvents(foreign, own, plan), /Wrong delivery Session/u)
 })
+
+test('REQ-20261023-0001 requires staged attachment refs and maps the exact content blocks', () => {
+  const sourceRef = { attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png',
+    bytes: 68, width: 1, height: 1, name: 'photo.png' }
+  const targetRef = { ...sourceRef, attachmentId: `sha256:${'b'.repeat(64)}` }
+  const withImage = structuredClone(events)
+  withImage[1].data.content.push({ type: 'image', attachment: sourceRef })
+  assert.throws(() => remapSessionEvents(withImage, own, plan), /Unstaged attachment/u)
+  const mapped = remapSessionEvents(withImage, own, plan, {
+    attachments: [{ type: 'image', sourceRef, targetRef }],
+  })
+  assert.deepEqual(mapped[1].data.content[1].attachment, targetRef)
+  assert.deepEqual(withImage[1].data.content[1].attachment, sourceRef)
+  assert.equal(mapped[1].data.content[0].text, own)
+})

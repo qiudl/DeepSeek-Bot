@@ -1,4 +1,5 @@
 // Rewrite only structural Session references in a decoded DSH event seed.
+import { remapSessionAttachments } from './team-import-attachments.js'
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const REFERENCE_KEY = /(?:session|room|bot)id$/iu
 const TEXT_KEY = new Set(['text', 'content', 'arguments', 'title', 'name', 'note'])
@@ -20,7 +21,7 @@ function checkReferences(value, targetIds, sourceIds) {
 }
 
 /** Does not copy a Session header or change chat text; callers supply target cwd/preset separately. */
-export function remapSessionEvents(events, sourceId, plan, { active = false } = {}) {
+export function remapSessionEvents(events, sourceId, plan, { active = false, attachments = [] } = {}) {
   if (!Array.isArray(events) || events.length > 1_000_000 || !object(plan?.sessions) ||
       !SESSION_ID.test(sourceId) || !SESSION_ID.test(plan.sessions[sourceId] ?? '')) {
     throw new Error('Invalid Session seed')
@@ -57,5 +58,5 @@ export function remapSessionEvents(events, sourceId, plan, { active = false } = 
     checkReferences(event, targetIds, sourceIds)
   })
   if (active && firstAppend !== 'system/message') throw new Error('Active history needs a protected system message')
-  return mapped
+  return remapSessionAttachments(mapped, attachments)
 }
