@@ -42,3 +42,7 @@
 事件映射器增加后，对同一隔离 mock 团队 10 个 Session（4 个活动段）的 658 条已解码事件做只读预检与映射，数量一致且全部通过；这仍未执行 DSH `ctx.agents.create({ seed })`，不构成模型上下文连续性的验收。
 
 随后在另一个**隔离 Profile** 中，以正式 `runProfile` 和 `ctx.agents.create({ seed, meta, setup })` 导入一段来自上述 mock 团队的 173 条活动历史事件；setup 按 DSH 契约挂载 `standard` preset 并返回 `void`，目标 Workspace 与标题由目标机创建，`ctx.sessions.flush(session)` 后关闭并重新启动。重启前后均恢复 47 条聊天消息；选择目标 mock 模型后，新回合正确回答旧聊天中的独有事实。两端隔离 Web 与 mock 进程均已停止。此试验仍未导入所有 Bot/群聊/记忆，也未对 Boston 真实历史运行，更不表示长期同步已可用。
+
+活动段阶段器 `team-import-agent.js` 在创建 DSH Agent 前，先要求 `team-import-journal.js` 以排他写入方式将源/目标 ID、状态摘要和事件摘要持久化；相同目标 ID 的重试一律拒绝。创建后核验 seed 前缀，关联目标 Workspace、标题和显式目标模型，flush 成功才把日志改为 `staged`。中途失败标为 `needs-review`；进程直接终止时保留 `pending`，均禁止自动重建，待人工或后续恢复器核对已持久化的 Session。日志不含聊天正文，也不修改团队状态。此模块尚未接入 DS Bot Host 的正式导入命令，尚未实现历史空段、附件、记忆、原子激活及长期同步。
+
+在 m5max 新建的隔离 `req6148agent` Profile 上，使用阶段器和磁盘日志重做正式 DSH seed 探针：173 条 mock 历史事件、重启前后各 47 条消息，后续 mock 模型回合仍能引用旧事实，日志最终状态 `staged`。声明版 DSH `0.2.1-rc.2` 完整单测为 883 通过、2 跳过、0 失败；lint 0 错误，生成物检查通过。Slark 固定版 DSH `0.2.1-alpha.2` 的另一隔离 mock Web 烟测 52 步全部通过。隔离 Web 与 mock 端口已停止。结果只证明一个活动聊天段的阶段器路径，不能代替完整团队迁入验收。
