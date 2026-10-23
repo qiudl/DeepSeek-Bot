@@ -10,6 +10,8 @@ const sourceId = 'session-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const targetId = 'session-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
 const plan = { sessions: { [sourceId]: targetId } }
 const events = [{ seq: 0, type: 'system/message', time: 1, surfaceOp: 'append', data: { text: 'System' } }]
+const historicalEvents = [{ seq: 0, type: 'session-log-deepseek/delivery-accepted', time: 1,
+  data: { sessionId: sourceId } }]
 
 function fixture({ failAt } = {}) {
   const calls = []
@@ -39,6 +41,32 @@ test('REQ-20261023-0001 stages a seeded Agent only after durable reservation', a
     `reserve:${targetId}`, `create:${targetId}`, 'preset:standard', `attach:${targetId}`,
     'title:灭霸Thanos', 'model:mock/mock', 'flush', `complete:${targetId}`,
   ])
+})
+
+test('REQ-20261023-0001 stages a pre-surface historical Agent without model or Workspace exposure', async () => {
+  const { ctx, workspace, journal, calls } = fixture()
+  ctx.agents.create = async input => {
+    calls.push(`create:${input.sessionId}`)
+    await input.setup({})
+    return { agent: { session: { id: targetId, snapshotEvents: () => [
+      { ...historicalEvents[0], data: { sessionId: targetId } },
+      { seq: 1, type: 'session/end-seed' },
+    ] } } }
+  }
+  ctx.sessions.flush = async () => { calls.push('flush') }
+  await stageImportedAgent(ctx, { sourceId, plan, events: historicalEvents, workspace,
+    title: 'Historical', historyOnly: true, journal })
+  assert.deepEqual(calls, [
+    `reserve:${targetId}`, `create:${targetId}`, 'preset:standard', 'title:Historical', 'flush', `complete:${targetId}`,
+  ])
+})
+
+test('REQ-20261023-0001 historical staging rejects an explicit model binding', async () => {
+  const { ctx, workspace, journal, calls } = fixture()
+  await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events: historicalEvents, workspace,
+    title: 'Historical', historyOnly: true, model: { provider: 'mock', model: 'mock' }, journal }),
+  /Incomplete target Agent settings/u)
+  assert.deepEqual(calls, [])
 })
 
 test('REQ-20261023-0001 stops before creating a Session when reservation fails', async () => {

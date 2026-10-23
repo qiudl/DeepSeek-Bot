@@ -8,7 +8,7 @@
 - 一个 Bot 的 `id` 是第一段 Session ID；`sessionId` 指当前聊天段；`segments[]` 指旧段。群聊另有成员 Session 和旧段。只合并 `state.json` 会丢聊天与模型上下文。
 - DSH `sessionController.create` 只创建空白 Session；`ctx.agents.create({ seed })` 可经正式插件 API 建立带旧历史的持久 Agent。隔离 mock 试验已验证旧用户/助手消息进入下一次模型请求并在重启后恢复。真实历史和 DS Bot 映射尚未通过验证。
 - DSH V4 校验要求受保护的首个 `system/message` surface 节点。当前两端活动段符合；没有可见聊天的旧段应当只作为历史段保留。
-- DSH `SessionStore` 明确只管理内存，直接 `ctx.sessions.create({ seed })` 不会自动附加持久日志写句柄；Agent 工厂的 `ctx.agents.create({ seed })` 才会在发布前写入 seed。历史段不能用裸 Session 创建冒充持久迁入，须在隔离 Profile 验证旧段经 Agent 工厂持久化、重启后可读，同时禁止其接收新回合。m5max 本轮 SSH 超时，这项实测待恢复。
+- DSH `SessionStore` 明确只管理内存，直接 `ctx.sessions.create({ seed })` 不会自动附加持久日志写句柄；Agent 工厂的 `ctx.agents.create({ seed })` 才会在发布前写入 seed。历史段不能用裸 Session 创建冒充持久迁入。m5max 隔离 mock 的有 surface 旧段和无 surface 前导事件均已通过 Agent 工厂的重启恢复探针；正式 Host 仍须禁止历史段接收新回合。
 - 旧 Session header 中的 `cwd`、原模型选择、密钥和插件授权不能直接转移到目标设备。目标 Agent 应使用目标 Workspace 的绝对目录、目标机可用模型和目标 Agent preset。
 - 隔离 mock 的 10 个团队 Session 共含 240 个 Zstandard 帧；只解压首帧会误以为 Session 没有聊天。逐帧只读检查发现结构化引用位于投递回执的 `data.sessionId`、用户消息及收件箱插入记录的 `senderSessionId`/`roomId`；绝对 `cwd` 位于 Session header。事件映射器只改这些结构化 ID，保留正文，未知结构化 Session 引用拒绝。此证据来自 mock，不能代替真实历史验证。
 
@@ -22,6 +22,8 @@
 3. **隔离生成**：对每段历史做格式与敏感字段审查，按 DSH 公共 API 创建目标 Session。活动段使用 `ctx.agents.create({ seed, meta, agentOptions, setup })`，通过 `ctx.agentPresets.mount()` 绑定目标 preset，随后关联 Workspace、标题、模型与权限。旧段不能误当成活动 Agent。
 
 `team-import-events.js` 对解码后的事件序列做只读校验：seq 从零连续、活动段首个 surface append 为受保护的 `system/message`，并把已知结构化 Session 引用改为规划目标 ID。Session header 与来源 `cwd` 不参与事件 seed，聊天正文中引用的文字保持原样。它不负责解码磁盘文件或创建 Agent；即使全部事件能映射，也必须经 DSH 公共 API 持久化与下一回合验证。
+
+历史段复用 `team-import-agent.js` 的 `historyOnly` 模式：事件仍经映射校验，但允许没有聊天 surface 的旧前缀；仍使用 DSH Agent 工厂保证 seed 被持久化。此模式不绑定显式模型，也不把 Session attach 到目标 Workspace，并在私有日志中标为 `history`。它尚未接入正式导入入口；“未 attach”只表示不会进入该 Workspace 的列表，不能代替未来 Host 对历史段禁止新回合的授权检查。
 4. **校验与激活**：核对消息顺序、上下文、附件引用、群聊成员、记忆版本及目标原有数据指纹。只有全部通过，才原子写入团队映射和主 Bot 选择；失败保留源与原团队入口，可安全重试。
 5. **持续运行**：目标设备单独执行回合和计划任务。远端只通过受信设备的有界读、写及回执契约访问；不能透传任意 `/api/bot` 端点、Cookie、工作目录或密钥。离线端只看加密只读副本。
 
@@ -49,6 +51,10 @@
 活动段阶段器 `team-import-agent.js` 在创建 DSH Agent 前，先要求 `team-import-journal.js` 以排他写入方式将源/目标 ID、状态摘要和事件摘要持久化；相同目标 ID 的重试一律拒绝。创建后核验 seed 前缀，关联目标 Workspace、标题和显式目标模型，flush 成功才把日志改为 `staged`。中途失败标为 `needs-review`；进程直接终止时保留 `pending`，均禁止自动重建，待人工或后续恢复器核对已持久化的 Session。日志不含聊天正文，也不修改团队状态。此模块尚未接入 DS Bot Host 的正式导入命令，尚未实现历史空段、附件、记忆、原子激活及长期同步。
 
 在 m5max 新建的隔离 `req6148agent` Profile 上，使用阶段器和磁盘日志重做正式 DSH seed 探针：173 条 mock 历史事件、重启前后各 47 条消息，后续 mock 模型回合仍能引用旧事实，日志最终状态 `staged`。声明版 DSH `0.2.1-rc.2` 完整单测为 883 通过、2 跳过、0 失败；lint 0 错误，生成物检查通过。Slark 固定版 DSH `0.2.1-alpha.2` 的另一隔离 mock Web 烟测 52 步全部通过。隔离 Web 与 mock 端口已停止。结果只证明一个活动聊天段的阶段器路径，不能代替完整团队迁入验收。
+
+m5max 隔离 `req6148agent` Profile 后续又验证历史模式：一个带 `system/message` 的旧段有 122 条源事件、30 条聊天消息，重启后原始前缀和消息数不变；另从 mock 活动段截取了 9 条无 surface 的前导事件，经两次重启原始前缀仍一致、无聊天消息，DSH 首次恢复时补写生命周期结束事件，下一次重启数量稳定。两例均未 attach 到 Workspace，日志 mode 为 `history`。无 surface 例是 mock 前缀，不等同 Boston 真实旧段；真实数据仍未写入或运行。
+
+同一隔离环境还验证了群聊根 Session：22 条原始事件前缀、8 条可读消息在重启后保留，且未 attach 到目标 Workspace。活动段阶段器在历史模式代码加入后回归了 173 条事件、重启前后各 47 条消息及下一回合旧事实回忆。声明版 DSH 完整单测 893 通过、2 跳过、0 失败，lint 0 错误，生成物检查通过。固定版 DSH 首轮烟测有一次 `fetch failed`，同一新代码在新的隔离 Profile 重跑 52 步全部通过；两次烟测和各探针的 Web/mock 端口均已停止。该结果仍不覆盖真实 Boston 旧段、群成员所有 Session、附件、记忆激活与远程同步。
 
 长期记忆另有只读清单 `team-import-memory.js`：仅列出当前 Bot、群聊和团队作用域里的 `MEMORY.md` 与主题 Markdown，映射目标作用域并计算文件大小和 SHA-256；拒绝符号链接、孤儿作用域和未知文件。`snapshots/` 是 Session 冻结提示词，`reviewed.json` 是复盘游标，均不得冒充长期记忆或原样复制。m5max 隔离 mock 来源当前活动作用域没有长期记忆文件，只有已删除群聊的归档文件；清单正确返回 0。归档、复盘游标、记忆变更 journal 和目标已有团队记忆的合并仍须另行设计与验证，清单不能作为记忆迁入完成凭证。
 

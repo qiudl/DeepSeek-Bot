@@ -39,13 +39,14 @@ export function createTeamImportJournal(root) {
     async reserve(record) {
       validId(record?.sourceId)
       const path = pathFor(record?.targetId)
-      if (!['eventDigest', 'sourceDigest', 'targetDigest'].every(key => DIGEST.test(record[key] ?? ''))) {
+      if (!['active', 'history'].includes(record?.mode) ||
+          !['eventDigest', 'sourceDigest', 'targetDigest'].every(key => DIGEST.test(record[key] ?? ''))) {
         throw new Error('Invalid import digest')
       }
       await mkdir(root, { recursive: true, mode: 0o700 })
       try {
         await writeSynced(path, { version: 1, status: 'pending',
-          sourceId: record.sourceId, targetId: record.targetId,
+          sourceId: record.sourceId, targetId: record.targetId, mode: record.mode,
           eventDigest: record.eventDigest, sourceDigest: record.sourceDigest, targetDigest: record.targetDigest }, true)
       } catch (error) {
         if (error.code === 'EEXIST') throw new Error('Import Session already reserved')
