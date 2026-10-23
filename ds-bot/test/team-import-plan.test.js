@@ -40,6 +40,9 @@ test('REQ-20261023-0001 rejects collisions and broken group references before wr
   const broken = structuredClone(source)
   broken.rooms[room].members = [helper]
   assert.throws(() => planTeamImport(broken, target, () => id('3')), /Unknown group member/u)
+  let next = 3
+  assert.throws(() => planTeamImport(source, target, from => from === thanos ? thanos : id(String(next++))),
+    /Source Session ID cannot become a target ID/u)
 })
 
 test('REQ-20261023-0001 includes ordinary DSH Agent Sessions in the target occupancy check', () => {

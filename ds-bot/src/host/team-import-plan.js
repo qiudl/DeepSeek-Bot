@@ -76,8 +76,10 @@ export function planTeamImport(source, target, allocate, { occupiedSessionIds = 
   for (const id of occupiedSessionIds) occupied.add(sessionId(id))
   if (typeof allocate !== 'function') throw new Error('Missing Session ID allocator')
   const sessions = {}
+  const sourceSet = new Set(sourceIds)
   for (const from of sourceIds) {
     const to = sessionId(allocate(from))
+    if (sourceSet.has(to)) throw new Error('Source Session ID cannot become a target ID')
     if (occupied.has(to)) throw new Error('Duplicate target Session ID')
     occupied.add(to)
     sessions[from] = to
