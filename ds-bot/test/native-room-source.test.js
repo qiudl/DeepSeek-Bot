@@ -246,9 +246,19 @@ test('leaving stops reads and a new cycle begins after the old room sequence', a
   await f.nativeRoomService.prepare({ roomId: f.room.id })
   await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
   f.room.seq = 1
+  f.room.nativeTurnBridge = true
+  f.room.log = [{ seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'old' }]
+  const pending = queueNativeRoomTurn(f.room, { memberId: MEMBER, cycle: 1 })
+  assert.ok(pending)
   recordNativeRoomLine(f.room, { seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'old' })
+  f.setSaveFailure(true)
+  await assert.rejects(f.nativeRoomService.leaveAgent({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1 }), /save_failed/)
+  assert.deepEqual(f.room.nativeTurnOutbox?.map(turn => turn.turnId), [pending.turnId])
+  f.setSaveFailure(false)
   assert.deepEqual(await f.nativeRoomService.leaveAgent({ roomId: f.room.id, memberId: MEMBER, cycle: 1 }),
     { state: 'left', left_room_seq: 1 })
+  assert.deepEqual(f.room.nativeTurnOutbox, [])
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: MEMBER,
     cycle: 1, afterSeq: 0 }), { state: 'unavailable' })
   assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,

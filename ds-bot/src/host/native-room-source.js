@@ -337,11 +337,16 @@ export function install(rt) {
         if (member.state === 'left') return { state: 'left', left_room_seq: member.leftRoomSeq }
         if (member.state !== 'active') return { state: 'conflict' }
         const priorOutbox = room.nativeOutbox
+        const priorTurns = room.nativeTurnOutbox
         room.nativeMembers = { ...room.nativeMembers,
           [memberId]: { ...member, state: 'left', leftRoomSeq: room.seq } }
+        if (priorTurns) room.nativeTurnOutbox = priorTurns.filter(turn =>
+          turn.memberId !== memberId || turn.cycle !== cycle)
         compact(room)
         try { await rt.save() } catch (error) {
           room.nativeMembers = { ...room.nativeMembers, [memberId]: member }
+          if (priorTurns === undefined) delete room.nativeTurnOutbox
+          else room.nativeTurnOutbox = priorTurns
           room.nativeOutbox = [...priorOutbox, ...room.nativeOutbox.filter(line =>
             line.seq > (priorOutbox.at(-1)?.seq ?? 0))]
           throw error
