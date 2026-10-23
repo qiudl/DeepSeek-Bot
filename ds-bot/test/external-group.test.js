@@ -1,0 +1,290 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { install } from '../src/host/external-group.js'
+
+function fixture(enabled = true, saved) {
+  let service
+  let exclusiveWriter = true
+  let flushFails = false
+  let sessionCount = 0
+  let eventHandler
+  let toolGuard
+  let history = []
+  let archiveFails = false
+  let stopOutcome = 'unknown'
+  let stopFails = false
+  const sent = []
+  const archiveCalls = []
+  const stopCalls = []
+  const externalOwners = new Map()
+  const state = saved ? structuredClone(saved) : { externalGroup: { cycles: {}, deliveries: {}, results: [], nextResultSeq: 0 } }
+  const bots = { bot_1: { id: 'bot_1', name: 'Owner Bot', memory: 'private' } }
+  state.bots = bots
+  const rt = {
+    config: { slarkExternalGroup: enabled },
+    ctx: { provide(name, value) { assert.equal(name, 'dsBotSlarkExternalGroup'); service = value },
+      on(name, handler) { assert.equal(name, 'session/event'); eventHandler = handler },
+      tools: { guard(handler) { toolGuard = handler }, schemas: () => [{ name: 'create_bot' }] },
+      workspaceRegistry: { archiveSession: async (...args) => {
+        archiveCalls.push(args)
+        if (archiveFails) throw Error('archive disconnected')
+      } } },
+    state,
+    externalOwners,
+    own: (table, key) => Object.hasOwn(table, key) ? table[key] : undefined,
+    refresh: async () => {},
+    hasExclusiveWriter: () => exclusiveWriter,
+    botOf: id => Object.hasOwn(bots, id) ? bots[id] : undefined,
+    createSession: async () => `session-${++sessionCount}`,
+    save: async () => {
+      externalOwners.clear()
+      for (const cycle of Object.values(state.externalGroup.cycles)) externalOwners.set(cycle.sessionId, cycle.botId)
+      saved = structuredClone(state)
+    },
+    deliver: async input => { sent.push(input); if (flushFails) throw Error('flush disconnected') },
+    stopRoomTurn: async (...args) => { stopCalls.push(args)
+      if (stopFails) throw Error('stop disconnected')
+      return stopOutcome },
+    resolveAgent: async sessionId => ({ id: sessionId, ctx: { tools: { restrict: () => {} } } }),
+    async *eventsBackwards() { for (const event of history) yield event },
+    warn: () => {},
+  }
+  install(rt)
+  return { get service() { return service }, get saved() { return saved }, sent, bots, archiveCalls, stopCalls,
+    guardedTool(name, sessionId) { return toolGuard({ name, agent: { id: sessionId } }) },
+    emit(sessionId, event) { eventHandler({ id: sessionId }, event) },
+    setHistory(events) { history = events },
+    setExclusiveWriter(value) { exclusiveWriter = value }, setFlushFails(value) { flushFails = value },
+    setArchiveFails(value) { archiveFails = value },
+    setStopOutcome(value) { stopOutcome = value }, setStopFails(value) { stopFails = value } }
+}
+
+test('external group service is absent unless enabled', () => {
+  assert.equal(fixture(false).service, undefined)
+})
+
+test('internal resolver returns only a current local Bot identity', async () => {
+  const f = fixture()
+  assert.deepEqual(await f.service.resolveLocalBot('bot_1'), {
+    botId: 'bot_1', actorRef: 'deepseek-bot:bot_1', displayName: 'Owner Bot',
+  })
+  assert.equal(await f.service.resolveLocalBot('__proto__'), null)
+  assert.equal(await f.service.resolveLocalBot('missing'), null)
+  f.bots.bot_1.name = null
+  assert.equal(await f.service.resolveLocalBot('bot_1'), null)
+  f.bots.bot_1.name = 'Owner Bot'
+  f.setExclusiveWriter(false)
+  assert.equal(await f.service.resolveLocalBot('bot_1'), null)
+})
+
+test('external roster pages only current valid Bots while the Profile is the exclusive writer', async () => {
+  const f = fixture()
+  f.bots.bot_3 = { id: 'bot_3', name: 'Third Bot' }
+  f.bots.bot_2 = { id: 'bot_2', name: 'Second Bot' }
+  f.bots.bad = { id: 'other', name: 'Wrong identity' }
+  f.bots.empty = { id: 'empty', name: ' ' }
+  assert.deepEqual(await f.service.listLocalBots({ limit: 2 }), {
+    bots: [
+      { botId: 'bot_1', actorRef: 'deepseek-bot:bot_1', displayName: 'Owner Bot' },
+      { botId: 'bot_2', actorRef: 'deepseek-bot:bot_2', displayName: 'Second Bot' },
+    ], nextCursor: 'bot_2',
+  })
+  assert.deepEqual(await f.service.listLocalBots({ afterBotId: 'bot_2', limit: 2 }), {
+    bots: [{ botId: 'bot_3', actorRef: 'deepseek-bot:bot_3', displayName: 'Third Bot' }],
+    nextCursor: null,
+  })
+  await assert.rejects(f.service.listLocalBots({ limit: 0 }), /invalid_bot_roster_page/u)
+  await assert.rejects(f.service.listLocalBots({ afterBotId: '../bot' }), /invalid_bot_roster_page/u)
+  f.setExclusiveWriter(false)
+  assert.equal(await f.service.listLocalBots({ limit: 2 }), null)
+})
+
+const input = { schemaVersion: 1, deliveryId: '11111111-1111-4111-8111-111111111111',
+  groupId: '22222222-2222-4222-8222-222222222222', botId: 'bot_1', memberCycle: 1,
+  messageSeq: 7, payloadDigest: 'a'.repeat(64), text: 'Please check the plan.' }
+
+test('external group delivery is durable before flush and replays only its receipt after restart', async () => {
+  const first = fixture()
+  const accepted = await first.service.deliver(input)
+  assert.deepEqual(accepted, { state: 'accepted', deliveryId: input.deliveryId,
+    groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
+    payloadDigest: input.payloadDigest, sessionId: 'session-1' })
+  assert.equal(first.sent.length, 1)
+  assert.match(first.guardedTool('create_bot', accepted.sessionId), /unavailable/u)
+  assert.equal(first.guardedTool('create_bot', 'private-chat'), undefined)
+  assert.deepEqual(await first.service.deliver({ ...input,
+    deliveryId: '33333333-3333-4333-8333-333333333333', messageSeq: 8 }), { state: 'busy' })
+  const afterRestart = fixture(true, first.saved)
+  assert.deepEqual(await afterRestart.service.receipt(input), accepted)
+  assert.deepEqual(await afterRestart.service.receipt({ ...input,
+    groupId: '44444444-4444-4444-8444-444444444444' }), { state: 'missing' })
+  assert.deepEqual(await afterRestart.service.deliver(input), accepted)
+  assert.equal(afterRestart.sent.length, 0)
+  assert.deepEqual(await afterRestart.service.deliver({ ...input, text: 'Run a different task.' }), { state: 'conflict' })
+  assert.equal(afterRestart.sent.length, 0)
+})
+
+test('uncertain flush retains the key and never silently executes it twice', async () => {
+  const first = fixture()
+  first.setFlushFails(true)
+  const result = await first.service.deliver(input)
+  assert.equal(result.state, 'indeterminate')
+  const afterRestart = fixture(true, first.saved)
+  assert.deepEqual(await afterRestart.service.deliver(input), result)
+  assert.equal(afterRestart.sent.length, 0)
+})
+
+test('in-flight inventory exposes scoped stable IDs without prompt text and keeps uncertainty visible', async () => {
+  const f = fixture()
+  f.setFlushFails(true)
+  assert.equal((await f.service.deliver(input)).state, 'indeterminate')
+  const page = await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, limit: 1 })
+  assert.deepEqual(page, { state: 'ok', deliveries: [{ deliveryId: input.deliveryId,
+    messageSeq: input.messageSeq, state: 'indeterminate', payloadDigest: input.payloadDigest }],
+  nextCursor: null })
+  assert.equal(JSON.stringify(page).includes(input.text), false)
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 2 }), { state: 'ok', deliveries: [], nextCursor: null })
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 1, afterDeliveryId: input.deliveryId }),
+  { state: 'ok', deliveries: [], nextCursor: null })
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 1, limit: 0 }), { state: 'invalid' })
+  f.setExclusiveWriter(false)
+  assert.deepEqual(await f.service.inFlightPage({ groupId: input.groupId, botId: input.botId,
+    memberCycle: 1 }), { state: 'unavailable' })
+})
+
+test('one stable stop request targets only its delivery and awaits terminal evidence', async () => {
+  const f = fixture()
+  const accepted = await f.service.deliver(input)
+  const request = { groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, deliveryId: input.deliveryId,
+    requestId: '33333333-3333-4333-8333-333333333333' }
+  assert.deepEqual(await f.service.requestStopDelivery({ ...request, requestId: 'bad' }), { state: 'invalid' })
+  assert.deepEqual(await f.service.requestStopDelivery({ ...request,
+    groupId: '44444444-4444-4444-8444-444444444444' }), { state: 'missing' })
+  f.setExclusiveWriter(false)
+  assert.deepEqual(await f.service.requestStopDelivery(request), { state: 'unavailable' })
+  f.setExclusiveWriter(true)
+  f.setStopOutcome('cancel_requested')
+  assert.deepEqual(await f.service.requestStopDelivery(request), { state: 'requested',
+    deliveryId: input.deliveryId, requestId: request.requestId })
+  assert.deepEqual(f.stopCalls, [[accepted.sessionId, input.deliveryId]])
+  assert.deepEqual(await f.service.requestStopDelivery({ ...request,
+    requestId: '55555555-5555-4555-8555-555555555555' }), { state: 'conflict' })
+  f.emit(accepted.sessionId, { type: 'user/message', data: { turn: 1,
+    source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } })
+  f.emit(accepted.sessionId, { type: 'turn/end', data: { turn: 1, reason: { kind: 'stopped' } } })
+  const terminal = await f.service.requestStopDelivery(request)
+  assert.deepEqual(terminal, { state: 'terminal', deliveryId: input.deliveryId,
+    requestId: request.requestId, status: 'stopped', resultId: `${input.deliveryId}:final` })
+  assert.equal(f.stopCalls.length, 1)
+  const restarted = fixture(true, f.saved)
+  assert.deepEqual(await restarted.service.requestStopDelivery(request), terminal)
+  assert.deepEqual(await restarted.service.acknowledgeResult({ ...request,
+    resultId: `${input.deliveryId}:final` }), { state: 'acknowledged' })
+  assert.deepEqual(await restarted.service.requestStopDelivery(request), terminal)
+})
+
+test('a queued delivery is confirmed stopped only after its exact inbox item is removed', async () => {
+  const f = fixture()
+  const accepted = await f.service.deliver(input)
+  f.setStopOutcome('queued_removed')
+  const request = { groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, deliveryId: input.deliveryId,
+    requestId: '33333333-3333-4333-8333-333333333333' }
+  assert.deepEqual(await f.service.requestStopDelivery(request), { state: 'terminal',
+    deliveryId: input.deliveryId, requestId: request.requestId,
+    status: 'stopped', resultId: `${input.deliveryId}:final` })
+  assert.deepEqual(f.stopCalls, [[accepted.sessionId, input.deliveryId]])
+  assert.deepEqual((await f.service.resultPage(input)).results.map(result => result.status), ['stopped'])
+})
+
+test('failed stop transport keeps its request key for retry after restart', async () => {
+  const f = fixture()
+  await f.service.deliver(input)
+  const request = { groupId: input.groupId, botId: input.botId,
+    memberCycle: input.memberCycle, deliveryId: input.deliveryId,
+    requestId: '33333333-3333-4333-8333-333333333333' }
+  f.setStopFails(true)
+  await assert.rejects(f.service.requestStopDelivery(request), /stop disconnected/u)
+  assert.equal(f.saved.externalGroup.deliveries[input.deliveryId].stopRequestId, request.requestId)
+  const restarted = fixture(true, f.saved)
+  restarted.setStopOutcome('queued_removed')
+  assert.equal((await restarted.service.requestStopDelivery(request)).state, 'terminal')
+  assert.deepEqual(await restarted.service.requestStopDelivery({ ...request,
+    requestId: '55555555-5555-4555-8555-555555555555' }), { state: 'conflict' })
+})
+
+test('writer loss and malformed scope cannot create external group sessions', async () => {
+  const f = fixture()
+  f.setExclusiveWriter(false)
+  assert.deepEqual(await f.service.deliver(input), { state: 'unavailable' })
+  f.setExclusiveWriter(true)
+  assert.deepEqual(await f.service.deliver({ ...input, memberCycle: 0 }), { state: 'invalid' })
+  assert.deepEqual(await f.service.deliver({ ...input, botId: '__proto__' }), { state: 'bot_missing' })
+  assert.equal(f.sent.length, 0)
+})
+
+test('finished Bot turn enters a stable result page and revoked cycle rejects new work', async () => {
+  const f = fixture()
+  const accepted = await f.service.deliver(input)
+  f.emit(accepted.sessionId, { type: 'user/message', data: { turn: 1,
+    source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } })
+  f.emit(accepted.sessionId, { type: 'assistant/message', data: { turn: 1,
+    message: { content: [{ type: 'text', text: 'Plan checked.' }] } } })
+  f.emit(accepted.sessionId, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+  const page = await f.service.resultPage(input)
+  assert.deepEqual(page, { state: 'ok', results: [{ id: `${input.deliveryId}:final`, deliveryId: input.deliveryId,
+    groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
+    seq: 1, status: 'completed', text: 'Plan checked.' }], next: 1 })
+  assert.deepEqual(await f.service.receipt(input), {
+    state: 'result_recorded', deliveryId: input.deliveryId,
+    groupId: input.groupId, botId: input.botId, memberCycle: input.memberCycle,
+    payloadDigest: input.payloadDigest, sessionId: accepted.sessionId,
+    resultId: `${input.deliveryId}:final`,
+  })
+  const afterRestart = fixture(true, f.saved)
+  assert.deepEqual(await afterRestart.service.resultPage(input), page)
+  assert.deepEqual(await afterRestart.service.acknowledgeResult({ ...input,
+    resultId: `${input.deliveryId}:final` }), { state: 'acknowledged' })
+  assert.deepEqual(await afterRestart.service.resultPage(input), { state: 'ok', results: [], next: 0 })
+  assert.deepEqual(await afterRestart.service.revokeCycle({ ...input, version: 1 }), { state: 'revoked' })
+  assert.deepEqual(await afterRestart.service.deliver({ ...input, deliveryId: '33333333-3333-4333-8333-333333333333' }), { state: 'revoked' })
+  assert.equal(afterRestart.sent.length, 0)
+})
+
+test('failed stop request survives restart and retries the same revocation decision', async () => {
+  const f = fixture()
+  await f.service.deliver(input)
+  f.setArchiveFails(true)
+  await assert.rejects(f.service.revokeCycle({ ...input, version: 2, stopInFlight: true }),
+    /archive disconnected/u)
+  assert.equal(f.saved.externalGroup.cycles[`${input.groupId}:${input.botId}:1`].revoked, true)
+  const restarted = fixture(true, f.saved)
+  assert.deepEqual(await restarted.service.revokeCycle({ ...input, version: 2,
+    stopInFlight: true }), { state: 'revoked' })
+  assert.equal(restarted.archiveCalls.length, 1)
+  assert.deepEqual(await restarted.service.revokeCycle({ ...input, version: 2,
+    stopInFlight: true }), { state: 'revoked' })
+  assert.equal(restarted.archiveCalls.length, 1)
+  assert.deepEqual(await restarted.service.revokeCycle({ ...input, version: 2,
+    stopInFlight: false }), { state: 'conflict' })
+})
+
+test('result page recovers a completed turn from DSH Session history after Host restart', async () => {
+  const first = fixture()
+  await first.service.deliver(input)
+  const restarted = fixture(true, first.saved)
+  restarted.setHistory([
+    { type: 'turn/end', data: { turn: 9, reason: { kind: 'completed' } } },
+    { type: 'assistant/message', data: { turn: 9, message: { content: [{ type: 'text', text: 'Recovered result.' }] } } },
+    { type: 'user/message', data: { turn: 9, source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } },
+  ])
+  const page = await restarted.service.resultPage(input)
+  assert.equal(page.results[0].text, 'Recovered result.')
+  assert.equal((await restarted.service.receipt(input)).state, 'result_recorded')
+  assert.equal(restarted.sent.length, 0)
+})

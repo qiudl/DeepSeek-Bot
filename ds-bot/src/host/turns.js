@@ -91,15 +91,19 @@ export function install(rt) {
     stoppedRoomTurns.add(exchangeId)
     if (stoppedRoomTurns.size > STOPPED_KEPT) stoppedRoomTurns.delete(stoppedRoomTurns.values().next().value)
     const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
-    if (agent === undefined) return
+    if (agent === undefined) return 'unknown'
     const entry = live.get(sessionId)
     if (entry?.turn !== undefined && entry.info?.exchangeId === exchangeId) {
       agent.cancel({ kind: 'hook', reason: 'ds-bot/stopped' })
-      return
+      return 'cancel_requested'
     }
     for (const message of [...(agent.inbox?.nextStep ?? []), ...(agent.inbox?.nextTurn ?? [])]) {
-      if (message.source?.exchangeId === exchangeId && agent.inbox.remove(message.id)) stoppedRoomTurns.delete(exchangeId)
+      if (message.source?.exchangeId === exchangeId && agent.inbox.remove(message.id)) {
+        stoppedRoomTurns.delete(exchangeId)
+        return 'queued_removed'
+      }
     }
+    return 'unknown'
   }
 
   const liveOf = id => {
@@ -475,7 +479,7 @@ export function install(rt) {
           // claims the running turn nor queues as the next one's trigger.
         } else if (source?.kind === 'schedule' && rt.roomOf(id)) {
           // A group's scheduled task reaches the group as the user's message.
-          queueRoomMessage(id, { text: reminderText(textOf(event.data.content)) })
+          queueRoomMessage(id, { text: reminderText(textOf(event.data.content)), sourceKind: 'schedule' })
         } else if (source?.kind === REFERENCE_KIND && rt.roomOf(id)) {
           attachReference(roomInbox.get(id), source, textOf(event.data.content))
         } else if (source?.kind === 'user' || source?.kind === REPLY_KIND) {
@@ -483,7 +487,9 @@ export function install(rt) {
             const content = Array.isArray(event.data.content) ? event.data.content : []
             const images = content.filter(block => block?.type === 'image' && !block.offloaded).map(block => block.attachment)
             const files = content.filter(block => block?.type === 'file' && block.attachment !== undefined).map(block => block.attachment)
-            queueRoomMessage(id, { text: textOf(event.data.content), ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) })
+            queueRoomMessage(id, { text: textOf(event.data.content), sourceKind: 'user',
+              ...(typeof event.data.id === 'string' ? { sourceMessageId: event.data.id } : {}),
+              ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) })
           }
           const own = rt.chatOwners.get(id)
           if (own !== undefined) rt.dropKickoff(own)

@@ -1,0 +1,17 @@
+# Slark external group adapter (REQ-20261020-0010)
+
+Slark owns the product group, its membership, messages, tasks and approvals. DS Bot owns each Bot's model Session and private memory. A Slark group must not be mirrored as a DS Bot room: the two products would then have competing histories and authorization rules.
+
+The optional `dsBotSlarkExternalGroup` service is available only when `slarkExternalGroup: true` and the current Profile is the exclusive team writer. It is an internal Profile service. A DSH Host adapter must authenticate the caller's Account and Profile, bind the requested Slark group and member cycle, and supply an authorized payload. Browser clients and models must not call the service directly.
+
+## Durable flow
+
+One Bot, group and member cycle uses one separate DSH Session. The first delivery creates and saves its Session mapping. A delivery record with a stable ID, content fingerprint and `indeterminate` state is saved before the DSH prompt is flushed. Only a successful flush and subsequent save can produce `accepted`; neither means the Bot has finished. Every persisted receipt returns its group, Bot, member cycle and original payload digest; a recorded result also returns its stable result ID. A receipt lookup requires the original scope and returns `missing` for a different scope. Repeating the ID with the same payload reads its record. Repeating it with a different payload conflicts. An uncertain flush is never replayed automatically, since it may already have started a turn. A second delivery to the same cycle waits until the first has a recorded result, preventing two messages from sharing a Bot turn.
+
+Bot output gets a stable result ID and a monotonically increasing result cursor. A missed live event can be reconstructed from the DSH Session event history by its original delivery ID and turn. Slark may acknowledge a result only after its own durable ingestion; acknowledgement removes the output but retains the delivery tombstone so history recovery cannot resurrect it. Revoking a cycle rejects new deliveries and optionally stops its running Session; Slark decides whether an in-flight task continues.
+
+An owner stop choice is bound to one delivery and a stable request ID. The plugin saves that request before attempting to stop the matching DSH exchange. A cancellation request remains pending until the matching turn ends; removing the exact queued inbox item can be confirmed immediately. A completed turn is reported as completed even if the owner requested a stop concurrently. A lost acknowledgement repeats the same request ID, and a different stop request ID conflicts. The Host must verify the Slark owner decision before forwarding this private operation. A cycle-wide revoke is not a per-delivery stop receipt.
+
+## Remaining release gates
+
+The current implementation is local and default disabled. It still needs a Host control protocol with Account-bound `deliver`, `receipt`, `result_page`, result acknowledgement and cycle revocation; a Slark outbox worker and result ingestion; source and member authorization at the Host boundary; bounded history reconciliation; external Session context rotation; and a real isolated Host plus Slark round trip. Keep the feature disabled until those gates and REQ-20261020-0010 acceptance pass. This note does not authorize a public upstream discussion or publication.

@@ -3,6 +3,9 @@
 - insert:
     - id: bot
       name: ds-bot
+      config:
+        slarkExternalGroup: true
+        slarkNativeAgentTurns: true
     # Web search with the current conversation route's own key, else a keyless
     # results-page fallback (see README "Web search").
     - id: web-search-auto
