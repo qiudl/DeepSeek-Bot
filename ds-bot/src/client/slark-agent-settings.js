@@ -21,6 +21,7 @@ export function SlarkAgentSettings({ room }) {
   const [available, setAvailable] = useState(false)
   const [group, setGroup] = useState(null)
   const [choices, setChoices] = useState([])
+  const [catalog, setCatalog] = useState([])
   const [projects, setProjects] = useState([])
   const [scope, setScope] = useState(null)
   const [members, setMembers] = useState([])
@@ -73,6 +74,7 @@ export function SlarkAgentSettings({ room }) {
       const selected = new Set(scope.value.selected_project_ids)
       setGroup(prepared)
       setMembers(snapshot.members.filter(member => member.actor_kind === 'slark_agent'))
+      setCatalog(page.value.items)
       setScope(scope.value)
       setProjects(projectPage.value.items.filter(project => !selected.has(project.project_id)))
       setChoices(page.value.items.filter(agent => selected.has(agent.project_id) &&
@@ -143,9 +145,17 @@ export function SlarkAgentSettings({ room }) {
         : t('Connect this group chat to Slark to add an Agent.')),
       h('button', { type: 'button', className: 'bt-mini', disabled: busy,
         onClick: () => { void connect() } }, group ? t('Refresh Agents') : t('Connect Slark'))),
-    ...members.map(member => h('div', { key: member.member_id,
-      className: 'bt-set-row bt-bs-row' },
-    h('span', { className: 'bt-bs-label' }, `${member.agent?.agent_id ?? 'Agent'} · ${member.agent?.project_id ?? ''}`))),
+    ...members.map(member => {
+      const agent = catalog.find(item => item.project_id === member.agent?.project_id &&
+        item.agent_id === member.agent?.agent_id)
+      return h('div', { key: member.member_id, className: 'bt-set-row bt-bs-row' },
+        h('span', { className: 'bt-bs-label' }, agent
+          ? `${agent.agent_name} · ${agent.project_name}`
+          : `${member.agent?.agent_id ?? 'Agent'} · ${member.agent?.project_id ?? ''}`),
+        h('span', { className: 'bt-set-hint' }, !agent ? t('Status unknown')
+          : agent.available === true && agent.reason_code === 'ready'
+            ? t('Available') : t('Unavailable')))
+    }),
     ...choices.filter(agent => !members.some(member => member.agent?.project_id === agent.project_id &&
       member.agent?.agent_id === agent.agent_id)).map(agent => h('button', { key: `${agent.project_id}:${agent.agent_id}`,
       type: 'button', className: 'bt-set-row bt-bs-row bt-gs-pick', disabled: busy,

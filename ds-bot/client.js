@@ -73,6 +73,9 @@ var ZH = {
   "Connect this group chat to Slark to add an Agent.": "连接 Slark 后可将 Agent 加入这个群聊。",
   "Refresh Agents": "刷新 Agent",
   "Connect Slark": "连接 Slark",
+  Available: "可用",
+  Unavailable: "不可用",
+  "Status unknown": "状态未知",
   "Enable project": "启用项目",
   "Project enabled. Refresh Agents to choose one.": "项目已启用，请刷新 Agent 后选择。",
   Close: "关闭",
@@ -10496,6 +10499,7 @@ function SlarkAgentSettings({ room: room2 }) {
   const [available, setAvailable] = (0, import_react27.useState)(false);
   const [group, setGroup] = (0, import_react27.useState)(null);
   const [choices, setChoices] = (0, import_react27.useState)([]);
+  const [catalog, setCatalog] = (0, import_react27.useState)([]);
   const [projects, setProjects] = (0, import_react27.useState)([]);
   const [scope, setScope] = (0, import_react27.useState)(null);
   const [members, setMembers] = (0, import_react27.useState)([]);
@@ -10555,6 +10559,7 @@ function SlarkAgentSettings({ room: room2 }) {
       const selected = new Set(scope2.value.selected_project_ids);
       setGroup(prepared);
       setMembers(snapshot.members.filter((member) => member.actor_kind === "slark_agent"));
+      setCatalog(page.value.items);
       setScope(scope2.value);
       setProjects(projectPage.value.items.filter((project) => !selected.has(project.project_id)));
       setChoices(page.value.items.filter((agent) => selected.has(agent.project_id) && agent.available === true && agent.reason_code === "ready"));
@@ -10652,14 +10657,15 @@ function SlarkAgentSettings({ room: room2 }) {
         }
       }, group ? t("Refresh Agents") : t("Connect Slark"))
     ),
-    ...members.map((member) => (0, import_react27.createElement)(
-      "div",
-      {
-        key: member.member_id,
-        className: "bt-set-row bt-bs-row"
-      },
-      (0, import_react27.createElement)("span", { className: "bt-bs-label" }, `${member.agent?.agent_id ?? "Agent"} · ${member.agent?.project_id ?? ""}`)
-    )),
+    ...members.map((member) => {
+      const agent = catalog.find((item) => item.project_id === member.agent?.project_id && item.agent_id === member.agent?.agent_id);
+      return (0, import_react27.createElement)(
+        "div",
+        { key: member.member_id, className: "bt-set-row bt-bs-row" },
+        (0, import_react27.createElement)("span", { className: "bt-bs-label" }, agent ? `${agent.agent_name} · ${agent.project_name}` : `${member.agent?.agent_id ?? "Agent"} · ${member.agent?.project_id ?? ""}`),
+        (0, import_react27.createElement)("span", { className: "bt-set-hint" }, !agent ? t("Status unknown") : agent.available === true && agent.reason_code === "ready" ? t("Available") : t("Unavailable"))
+      );
+    }),
     ...choices.filter((agent) => !members.some((member) => member.agent?.project_id === agent.project_id && member.agent?.agent_id === agent.agent_id)).map((agent) => (0, import_react27.createElement)(
       "button",
       {
