@@ -142,20 +142,20 @@ test('native room reads fail closed on a lost or unverifiable message', async ()
   f.room.nativeOutbox = [{ seq: 2, who: 'User', sourceKind: 'user', sourceMessageId: 'message-2', text: 'later' },
     { seq: 3, who: 'Bot', botId: 'one', text: 'reply' }]
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
-    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 3 }),
     { state: 'history_gap' })
   f.room.nativeOutbox.unshift({ seq: 1, who: 'User', sourceKind: 'user', text: 'legacy' })
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
-    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 3 }),
     { state: 'unverifiable_message', seq: 1 })
   f.room.nativeOutbox[0].sourceMessageId = 'message-1'
   f.room.nativeOutbox[0].length = 50_000
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
-    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 3 }),
     { state: 'unverifiable_message', seq: 1 })
   f.setWriter(false)
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
-    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 3 }),
     { state: 'unavailable' })
 })
 
@@ -202,4 +202,16 @@ test('an unsuccessful acknowledgement keeps the message available for retry', as
   f.setSaveFailure(false)
   assert.equal((await f.nativeRoomService.roomMessages({ roomId: f.room.id,
     memberId: MEMBER, cycle: 1, afterSeq: 0 })).messages[0].text, 'retry me')
+})
+
+test('a multibyte message cannot exceed the Host frame budget', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
+  f.room.seq = 1
+  recordNativeRoomLine(f.room, { seq: 1, sourceKind: 'user', sourceMessageId: 'message-1',
+    text: '中'.repeat(6000) })
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0 }),
+  { state: 'unverifiable_message', seq: 1 })
 })

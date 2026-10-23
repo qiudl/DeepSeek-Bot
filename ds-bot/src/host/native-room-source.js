@@ -8,6 +8,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const coordinate = value => typeof value === 'string' &&
   Buffer.byteLength(value, 'utf8') >= 1 && Buffer.byteLength(value, 'utf8') <= 256 &&
   !/[\x00-\x1f\x7f]/u.test(value)
+const textFitsHostFrame = text => Buffer.byteLength(JSON.stringify(text), 'utf8') <= 16_000
 const botLineId = (roomId, seq) => {
   const bytes = createHash('sha256').update(`ds-bot-native-line/v1\0${roomId}\0${seq}`).digest()
   bytes[6] = bytes[6] & 0x0f | 0x50
@@ -28,7 +29,8 @@ export function recordNativeRoomLine(room, line) {
     ...(line.sourceMessageId ? { sourceMessageId: line.sourceMessageId } : {}),
     ...(line.botId ? { botId: line.botId } : {}),
     ...(line.kind ? { kind: line.kind } : {}),
-    ...(text.length <= 16_000 ? { text } : { text: '', length: text.length }),
+    ...(textFitsHostFrame(text) ? { text } :
+      { text: '', length: Buffer.byteLength(text, 'utf8') }),
   })
 }
 
@@ -141,12 +143,12 @@ export function install(rt) {
         return { state: 'joined', joined_room_seq: room.seq }
       })
     },
-    async roomMessages({ roomId, memberId, cycle, afterSeq = 0, limit = 50 } = {}) {
+    async roomMessages({ roomId, memberId, cycle, afterSeq = 0, limit = 3 } = {}) {
       return serialize(async () => {
         if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
           !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
           !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
-          !Number.isSafeInteger(limit) || limit < 1 || limit > 50) return { state: 'invalid' }
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 3) return { state: 'invalid' }
         await rt.refresh()
         if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
         const room = rt.roomOf(roomId)
@@ -174,14 +176,14 @@ export function install(rt) {
             if (line.botId !== undefined || typeof line.sourceMessageId !== 'string' ||
               line.sourceMessageId.length === 0 || line.sourceMessageId.length > 256 ||
               typeof line.text !== 'string' || line.text.length === 0 ||
-              line.text.length > 16_000 || line.length !== undefined)
+              !textFitsHostFrame(line.text) || line.length !== undefined)
               return { state: 'unverifiable_message', seq: line.seq }
             messages.push({ seq: line.seq, source_kind: 'user',
               message_id: line.sourceMessageId, text: line.text })
           } else if (line.botId !== undefined && line.kind === undefined) {
             if (typeof line.botId !== 'string' || line.botId.length === 0 ||
               typeof line.text !== 'string' || line.text.length === 0 ||
-              line.text.length > 16_000 || line.length !== undefined)
+              !textFitsHostFrame(line.text) || line.length !== undefined)
               return { state: 'unverifiable_message', seq: line.seq }
             messages.push({ seq: line.seq, source_kind: 'bot',
               message_id: botLineId(roomId, line.seq), bot_id: line.botId, text: line.text })
