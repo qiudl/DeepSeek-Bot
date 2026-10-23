@@ -1,4 +1,4 @@
-// A native room keeps its first Slark binding Source in the room's own DSH Session.
+// Keep Slark's fenced Source Session separate from the writable native room Session.
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 const CONTROL_TEXT = '[Slark Agent group membership requested]'
