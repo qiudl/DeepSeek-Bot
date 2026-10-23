@@ -2,7 +2,7 @@
 const SCHEMA = 'dsh-remote-bot-read/v1'
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,122}$/u
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u
-const MAX_RESULT_BYTES = 128 * 1024
+const MAX_RESULT_BYTES = 60 * 1024
 
 const row = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
