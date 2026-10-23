@@ -148,7 +148,10 @@ const fileLine = file => `[File "${file.name}" (${file.bytes} bytes) attached]`
 
 export function install(rt) {
   const { ctx } = rt
-  const participants = room => groupParticipants(room, room.members.map(rt.botOf).filter(Boolean))
+  const participants = room => {
+    const bots = room.members.map(rt.botOf).filter(Boolean)
+    return rt.config.slarkNativeAgentTurns === true ? groupParticipants(room, bots) : bots
+  }
 
   // A long line keeps its start in state.json, which is written whole on every save,
   // and what a member reads of it (GROUP_LINE_READ) in a file of its own: written once,
@@ -212,9 +215,37 @@ export function install(rt) {
   Object.assign(rt, { keepGroupLine, dropGroupLines,
     appendNativeAgentRoomResult(room, member, text, turnId) {
       ensureRoomLog(room)
+      let part = ''
+      for (const character of text) {
+        if (Buffer.byteLength(part + character, 'utf8') > 8000 && part) {
+          appendRoom(room, { who: member.name, botId: `slark-agent:${member.memberId}`,
+            text: part, nativeTurnId: turnId })
+          part = ''
+        }
+        part += character
+      }
       appendRoom(room, { who: member.name, botId: `slark-agent:${member.memberId}`,
-        kind: 'agent-result', text, nativeTurnId: turnId })
+        text: part, nativeTurnId: turnId })
       return room.seq
+    },
+    async publishNativeAgentRoomResult(room, member, text, turnId, roomSeq) {
+      const agent = await rt.resolveAgent(room.id)
+      const session = agent.session
+      for (let seq = session.seq - 1; seq >= 0; seq -= 1) {
+        const event = session.eventAt(seq)
+        if (event?.type === 'user/message' && event.data?.source?.nativeTurnId === turnId) {
+          await ctx.sessions.flush(session)
+          return
+        }
+      }
+      session.append('user/message', createUserMessage({
+        content: [{ type: 'text', text: `[Group post from ${member.name}]\n${text}` }],
+        source: { kind: SOURCE_KIND, form: 'relay', role: 'post',
+          exchangeId: turnId, nativeTurnId: turnId, nativeAgentResult: true,
+          senderName: member.name, senderSessionId: `slark-agent:${member.memberId}`,
+          roomId: room.id, logged: roomSeq, quiet: true },
+      }), { surfaceOp: 'append' })
+      await ctx.sessions.flush(session)
     } })
 
   // A member's group Session, created on its first turn there. A new one starts with

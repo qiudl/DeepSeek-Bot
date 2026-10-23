@@ -36,3 +36,11 @@ legacy user line without an ID, or text that cannot be forwarded whole fails
 closed. The Host and Slark delivery worker must confirm each authority receipt
 before acknowledging and compacting this outbox. Member join and removal remain
 Host-only and are not available in the browser until the authority path is wired.
+
+Native Agent replies arrive as signed, bounded chunks through the Host's dedicated
+result gate. The plugin assembles them by turn, checks the complete digest, and
+saves the result before publishing one group Session message. Publication is
+replayed by turn ID after a failed flush, so the room log and the visible chat
+converge without another model call. The room log splits long replies into
+bounded Bot lines for other Slark Agents. A turn acknowledgement removes its
+assembly receipt; it never starts a new turn from the Agent's own reply.

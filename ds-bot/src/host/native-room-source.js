@@ -130,34 +130,52 @@ export function install(rt) {
     return target
   })
   rt.ctx.provide('dsBotSlarkNativeRoom', {
-    async appendAgentResult({ roomId, groupId, memberId, cycle, turnId,
-      turnOrder, triggerRoomSeq, replyMessageId, status, resultDigest, text } = {}) {
+    async appendAgentResultChunk({ roomId, groupId, memberId, cycle, turnId,
+      turnOrder, triggerRoomSeq, projectId, agentId, replyMessageId, status,
+      resultDigest, chunkIndex, chunkCount, chunkText, chunkDigest } = {}) {
       return serialize(async () => {
         if (!coordinate(roomId) || !UUID.test(groupId ?? '') ||
           !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
           !UUID.test(turnId ?? '') || !Number.isSafeInteger(turnOrder) || turnOrder < 1 ||
           !Number.isSafeInteger(triggerRoomSeq) || triggerRoomSeq < 1 ||
-          !coordinate(replyMessageId) || !['completed', 'failed'].includes(status) ||
-          !DIGEST.test(resultDigest ?? '') || typeof text !== 'string' ||
-          text.length > 100_000 || typeof rt.appendNativeAgentRoomResult !== 'function')
+          !coordinate(projectId) || !coordinate(agentId) || !coordinate(replyMessageId) ||
+          !['completed', 'failed'].includes(status) || !DIGEST.test(resultDigest ?? '') ||
+          !Number.isSafeInteger(chunkIndex) || chunkIndex < 0 ||
+          !Number.isSafeInteger(chunkCount) || chunkCount < 1 || chunkCount > 100 ||
+          chunkIndex >= chunkCount || typeof chunkText !== 'string' ||
+          Buffer.byteLength(JSON.stringify(chunkText), 'utf8') > 14_000 ||
+          !DIGEST.test(chunkDigest ?? '') ||
+          typeof rt.appendNativeAgentRoomResult !== 'function')
           return { state: 'invalid' }
-        const digest = createHash('sha256').update(JSON.stringify([
-          'dsh-native-agent-result-v1', groupId, turnId, replyMessageId, status, text,
+        const actualChunkDigest = createHash('sha256').update(JSON.stringify([
+          'dsh-native-agent-chunk-v1', turnId, chunkIndex, chunkCount, chunkText,
         ])).digest('hex')
-        if (digest !== resultDigest) return { state: 'invalid' }
+        if (actualChunkDigest !== chunkDigest) return { state: 'invalid' }
         await rt.refresh()
         if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
         const room = rt.roomOf(roomId)
         const member = room?.nativeMembers?.[memberId]
         if (!room || !room.nativeTurnBridge || room.nativeGroupId !== groupId ||
           !member || member.state !== 'active' || member.groupId !== groupId ||
-          member.cycle !== cycle) return { state: 'unavailable' }
+          member.cycle !== cycle || member.projectId !== projectId ||
+          member.agentId !== agentId) return { state: 'unavailable' }
         const prior = room.nativeAgentResults?.[turnId]
-        if (prior) return prior.digest === digest && prior.memberId === memberId &&
+        if (prior) {
+          const matches = prior.digest === resultDigest && prior.memberId === memberId &&
           prior.cycle === cycle && prior.turnOrder === turnOrder &&
           prior.triggerRoomSeq === triggerRoomSeq && prior.replyMessageId === replyMessageId &&
-          prior.status === status ? { state: 'recorded', room_seq: prior.roomSeq } :
-          { state: 'conflict' }
+          prior.status === status && prior.chunkDigests?.[chunkIndex] === chunkDigest &&
+          prior.chunkCount === chunkCount
+          if (!matches) return { state: 'conflict' }
+          if (prior.publishText !== undefined) {
+            try { await rt.publishNativeAgentRoomResult(room, member, prior.publishText, turnId, prior.roomSeq)
+            } catch { return { state: 'unavailable' } }
+            delete prior.publishText
+            try { await rt.save() } catch { return { state: 'unavailable' } }
+          }
+          return { state: 'recorded', turn_id: turnId, chunk_index: chunkIndex,
+            room_seq: prior.roomSeq }
+        }
         const turn = (room.nativeTurnOutbox ?? []).find(item => item.turnId === turnId)
         if (!turn || turn.state !== 'pending' || turn.groupId !== groupId ||
           turn.memberId !== memberId || turn.cycle !== cycle ||
@@ -165,20 +183,62 @@ export function install(rt) {
           return { state: 'conflict' }
         if (Object.keys(room.nativeAgentResults ?? {}).length >= 1000)
           return { state: 'unavailable' }
+        const pending = room.nativeAgentChunks?.[turnId]
+        if (pending && (pending.groupId !== groupId || pending.memberId !== memberId ||
+          pending.cycle !== cycle || pending.turnOrder !== turnOrder ||
+          pending.triggerRoomSeq !== triggerRoomSeq || pending.projectId !== projectId ||
+          pending.agentId !== agentId || pending.replyMessageId !== replyMessageId ||
+          pending.status !== status || pending.digest !== resultDigest ||
+          pending.chunkCount !== chunkCount)) return { state: 'conflict' }
+        if (!pending && Object.keys(room.nativeAgentChunks ?? {}).length >= 100)
+          return { state: 'unavailable' }
+        const chunks = pending?.chunks?.slice() ?? Array(chunkCount).fill(null)
+        const digests = pending?.chunkDigests?.slice() ?? Array(chunkCount).fill(null)
+        if (chunks[chunkIndex] !== null &&
+          (chunks[chunkIndex] !== chunkText || digests[chunkIndex] !== chunkDigest))
+          return { state: 'conflict' }
+        chunks[chunkIndex] = chunkText
+        digests[chunkIndex] = chunkDigest
         const before = { seq: room.seq, log: room.log, outbox: room.nativeOutbox?.slice(),
-          results: room.nativeAgentResults }
-        const roomSeq = rt.appendNativeAgentRoomResult(room, member, text, turnId)
-        room.nativeAgentResults = { ...room.nativeAgentResults, [turnId]: {
-          digest, memberId, cycle, turnOrder, triggerRoomSeq,
-          replyMessageId, status, roomSeq } }
+          results: room.nativeAgentResults, chunks: room.nativeAgentChunks }
+        let roomSeq = null
+        if (chunks.every(chunk => typeof chunk === 'string')) {
+          const text = chunks.join('')
+          const digest = createHash('sha256').update(JSON.stringify([
+            'dsh-native-agent-result-v1', groupId, turnId, replyMessageId, status, text,
+          ])).digest('hex')
+          if (text.length > 100_000 || digest !== resultDigest) return { state: 'conflict' }
+          roomSeq = rt.appendNativeAgentRoomResult(room, member, text, turnId)
+          room.nativeAgentResults = { ...room.nativeAgentResults, [turnId]: {
+            digest, memberId, cycle, turnOrder, triggerRoomSeq,
+            replyMessageId, status, roomSeq, chunkCount, chunkDigests: digests,
+            publishText: text } }
+          const rest = { ...room.nativeAgentChunks }
+          delete rest[turnId]
+          room.nativeAgentChunks = rest
+        } else {
+          room.nativeAgentChunks = { ...room.nativeAgentChunks, [turnId]: {
+            groupId, memberId, cycle, turnOrder, triggerRoomSeq,
+            projectId, agentId, replyMessageId, status,
+            digest: resultDigest, chunkCount, chunks, chunkDigests: digests } }
+        }
         try { await rt.save() } catch (error) {
           room.seq = before.seq
           room.log = before.log
           room.nativeOutbox = before.outbox
           room.nativeAgentResults = before.results
+          room.nativeAgentChunks = before.chunks
           throw error
         }
-        return { state: 'recorded', room_seq: roomSeq }
+        if (roomSeq !== null) {
+          try { await rt.publishNativeAgentRoomResult(room, member,
+            room.nativeAgentResults[turnId].publishText, turnId, roomSeq)
+          } catch { return { state: 'unavailable' } }
+          delete room.nativeAgentResults[turnId].publishText
+          try { await rt.save() } catch { return { state: 'unavailable' } }
+        }
+        return { state: roomSeq === null ? 'chunk_pending' : 'recorded',
+          turn_id: turnId, chunk_index: chunkIndex, room_seq: roomSeq }
       })
     },
     async prepare({ roomId } = {}) {
@@ -201,10 +261,23 @@ export function install(rt) {
           return { state: 'unavailable' }
         if (room.nativeGroupId && room.nativeGroupId !== groupId) return { state: 'conflict' }
         const existing = room.nativeMembers?.[memberId]
-        if (existing) return existing.groupId === groupId && existing.cycle === cycle &&
+        if (existing) {
+          if (existing.groupId === groupId && existing.cycle === cycle &&
           existing.projectId === projectId && existing.agentId === agentId &&
-          existing.name === name && existing.state === 'active'
-          ? { state: 'joined', joined_room_seq: existing.joinedRoomSeq } : { state: 'conflict' }
+          existing.name === name && existing.state === 'active') {
+            if (rt.config.slarkNativeAgentTurns === true && room.nativeTurnBridge !== true) {
+              const priorTurnBridge = room.nativeTurnBridge
+              room.nativeTurnBridge = true
+              try { await rt.save() } catch (error) {
+                if (priorTurnBridge === undefined) delete room.nativeTurnBridge
+                else room.nativeTurnBridge = priorTurnBridge
+                throw error
+              }
+            }
+            return { state: 'joined', joined_room_seq: existing.joinedRoomSeq }
+          }
+          return { state: 'conflict' }
+        }
         if (Object.values(room.nativeMembers ?? {}).some(member => member.state === 'active' &&
           member.projectId === projectId && member.agentId === agentId)) return { state: 'conflict' }
         if (!Number.isSafeInteger(room.seq)) {
@@ -214,7 +287,9 @@ export function install(rt) {
         }
         const priorGroupId = room.nativeGroupId
         const priorMembers = room.nativeMembers
+        const priorTurnBridge = room.nativeTurnBridge
         room.nativeGroupId = groupId
+        if (rt.config.slarkNativeAgentTurns === true) room.nativeTurnBridge = true
         room.nativeMembers = { ...(priorMembers ?? {}) }
         room.nativeOutbox ??= []
         room.nativeMembers[memberId] = { groupId, memberId, cycle, projectId, agentId, name,
@@ -226,6 +301,8 @@ export function install(rt) {
           else room.nativeGroupId = priorGroupId
           if (priorMembers === undefined) delete room.nativeMembers
           else room.nativeMembers = priorMembers
+          if (priorTurnBridge === undefined) delete room.nativeTurnBridge
+          else room.nativeTurnBridge = priorTurnBridge
           throw error
         }
         return { state: 'joined', joined_room_seq: room.seq }
@@ -334,13 +411,21 @@ export function install(rt) {
           selected.some((turn, index) => turn.turnId !== turnIds[index]))
           return { state: 'conflict' }
         const prior = room.nativeTurnOutbox
+        const priorResults = room.nativeAgentResults
+        const priorChunks = room.nativeAgentChunks
         const priorMember = member
         const selectedIds = new Set(turnIds)
         room.nativeTurnOutbox = prior.filter(turn => !selectedIds.has(turn.turnId))
+        room.nativeAgentResults = Object.fromEntries(Object.entries(priorResults ?? {})
+          .filter(([id]) => !selectedIds.has(id)))
+        room.nativeAgentChunks = Object.fromEntries(Object.entries(priorChunks ?? {})
+          .filter(([id]) => !selectedIds.has(id)))
         room.nativeMembers = { ...room.nativeMembers, [memberId]: { ...member,
           nativeTurnAckSeq: selected.at(-1).triggerRoomSeq } }
         try { await rt.save() } catch (error) {
           room.nativeTurnOutbox = prior
+          room.nativeAgentResults = priorResults
+          room.nativeAgentChunks = priorChunks
           room.nativeMembers = { ...room.nativeMembers, [memberId]: priorMember }
           throw error
         }

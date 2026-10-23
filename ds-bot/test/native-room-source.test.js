@@ -9,7 +9,7 @@ const NEXT_MEMBER = '33333333-3333-4333-8333-333333333333'
 const agent = { groupId: GROUP, memberId: MEMBER, cycle: 1,
   projectId: 'project-1', agentId: 'agent-1', name: 'Slark Agent · Project / Helper' }
 
-function fixture(enabled = true) {
+function fixture(enabled = true, turnBridge = false) {
   let writer = true
   let busy = false
   let captures = 0
@@ -17,12 +17,13 @@ function fixture(enabled = true) {
   let saveFailure = false
   let nativeRoomService
   const events = []
+  const published = []
   const room = { id: 'room-session', name: 'Team', members: ['one', 'two'] }
   const state = { workspaceId: 'workspace-1', rooms: { [room.id]: room } }
   const session = { append(type, message, options) { events.push({ type, message, options }) } }
   let creates = 0
   const rt = {
-    config: { slarkExternalGroup: enabled }, state,
+    config: { slarkExternalGroup: enabled, slarkNativeAgentTurns: turnBridge }, state,
     ctx: {
       sessions: { get: id => id === 'bridge-session' ? session : undefined, flush: async () => {} },
       sessionController: { async captureCollaborationSource(input) {
@@ -42,16 +43,20 @@ function fixture(enabled = true) {
     appendNativeAgentRoomResult(target, member, text, turnId) {
       target.seq += 1
       target.log = [...target.log, { seq: target.seq, who: member.name, text,
-        botId: `slark-agent:${member.memberId}`, kind: 'agent-result', nativeTurnId: turnId }]
+        botId: `slark-agent:${member.memberId}`, nativeTurnId: turnId }]
       recordNativeRoomLine(target, target.log.at(-1))
       return target.seq
+    },
+    async publishNativeAgentRoomResult(target, member, text, turnId, roomSeq) {
+      if (!published.some(item => item.turnId === turnId))
+        published.push({ target: target.id, member: member.memberId, text, turnId, roomSeq })
     },
     refresh: async () => {}, hasExclusiveWriter: () => writer,
     createSession: async () => { creates += 1; return 'bridge-session' },
     save: async () => { if (saveFailure) throw Error('save_failed') },
   }
   install(rt)
-  return { rt, room, events, get captures() { return captures },
+  return { rt, room, events, published, get captures() { return captures },
     get creates() { return creates },
     get nativeRoomService() { return nativeRoomService },
     setWriter(value) { writer = value }, setBusy(value) { busy = value },
@@ -237,6 +242,18 @@ test('native turns queue once for an original post and the current member cycle'
   assert.equal(f.room.nativeTurnOutbox.length, 0)
 })
 
+test('joining enables native turns only with the configured bridge and is safe to retry', async () => {
+  const f = fixture(true, true)
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent }),
+    { state: 'joined', joined_room_seq: 0 })
+  assert.equal(f.room.nativeTurnBridge, true)
+  f.room.nativeTurnBridge = false
+  assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent }),
+    { state: 'joined', joined_room_seq: 0 })
+  assert.equal(f.room.nativeTurnBridge, true)
+})
+
 test('native Agent result is durable once, scoped to its queued turn, and never becomes new input', async () => {
   const f = fixture()
   await f.nativeRoomService.prepare({ roomId: f.room.id })
@@ -252,24 +269,43 @@ test('native Agent result is durable once, scoped to its queued turn, and never 
   ])).digest('hex')
   const input = { roomId: f.room.id, groupId: GROUP, memberId: MEMBER, cycle: 1,
     turnId: turn.turnId, turnOrder: turn.order, triggerRoomSeq: 1,
-    replyMessageId, status: 'completed', resultDigest, text }
+    projectId: agent.projectId, agentId: agent.agentId,
+    replyMessageId, status: 'completed', resultDigest, chunkCount: 2 }
+  const chunk = (chunkIndex, chunkText) => ({ ...input, chunkIndex, chunkText,
+    chunkDigest: createHash('sha256').update(JSON.stringify([
+      'dsh-native-agent-chunk-v1', turn.turnId, chunkIndex, 2, chunkText,
+    ])).digest('hex') })
+  const first = chunk(0, 'Agent ')
+  const last = chunk(1, 'answer')
+  assert.deepEqual(await f.nativeRoomService.appendAgentResultChunk(first),
+    { state: 'chunk_pending', turn_id: turn.turnId, chunk_index: 0, room_seq: null })
+  assert.deepEqual(await f.nativeRoomService.appendAgentResultChunk(first),
+    { state: 'chunk_pending', turn_id: turn.turnId, chunk_index: 0, room_seq: null })
   f.setSaveFailure(true)
-  await assert.rejects(f.nativeRoomService.appendAgentResult(input), /save_failed/)
+  await assert.rejects(f.nativeRoomService.appendAgentResultChunk(last), /save_failed/)
   assert.equal(f.room.seq, 1)
   assert.equal(f.room.nativeAgentResults, undefined)
   assert.equal(f.room.nativeOutbox?.length ?? 0, 0)
   f.setSaveFailure(false)
-  assert.deepEqual(await f.nativeRoomService.appendAgentResult(input),
-    { state: 'recorded', room_seq: 2 })
-  assert.equal(f.room.log.at(-1).kind, 'agent-result')
-  assert.equal(f.room.nativeOutbox.at(-1).kind, 'agent-result')
-  assert.deepEqual(await f.nativeRoomService.appendAgentResult(input),
-    { state: 'recorded', room_seq: 2 })
+  assert.deepEqual(await f.nativeRoomService.appendAgentResultChunk(last),
+    { state: 'recorded', turn_id: turn.turnId, chunk_index: 1, room_seq: 2 })
+  assert.equal(f.room.log.at(-1).botId, `slark-agent:${MEMBER}`)
+  assert.equal(f.room.nativeOutbox.at(-1).botId, `slark-agent:${MEMBER}`)
+  assert.deepEqual(f.published.map(item => item.text), ['Agent answer'])
+  assert.deepEqual(await f.nativeRoomService.appendAgentResultChunk(first),
+    { state: 'recorded', turn_id: turn.turnId, chunk_index: 0, room_seq: 2 })
   assert.equal(f.room.seq, 2)
-  assert.deepEqual(await f.nativeRoomService.appendAgentResult({ ...input, text: 'changed' }),
+  assert.equal(f.published.length, 1)
+  assert.deepEqual(await f.nativeRoomService.appendAgentResultChunk({ ...first,
+    chunkText: 'changed' }),
     { state: 'invalid' })
-  assert.deepEqual(await f.nativeRoomService.appendAgentResult({ ...input,
+  assert.deepEqual(await f.nativeRoomService.appendAgentResultChunk({ ...first,
     turnOrder: turn.order + 1 }), { state: 'conflict' })
+  assert.deepEqual(await f.nativeRoomService.acknowledgeTurns({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, turnIds: [turn.turnId] }),
+  { state: 'turns_acknowledged', turn_ids: [turn.turnId] })
+  assert.deepEqual(f.room.nativeAgentResults, {})
+  assert.deepEqual(f.room.nativeAgentChunks, {})
 })
 
 test('a failed member save is not reported as a durable join', async () => {

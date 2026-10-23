@@ -475,7 +475,7 @@ export function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnCl
       if (source.role === 'secret' || deferred) return null
       if (source.role === 'post') {
         // A post logged into a running round already shows there, not again as a trigger.
-        if (source.logged !== undefined) return null
+        if (source.logged !== undefined && source.nativeAgentResult !== true) return null
         // A member's late failure, its work picked up after a restart, its work the user
         // stopped, or the end of its work shows as an event of the round it opens.
         if (source.failed !== undefined || source.resumed === true || source.stopped === true || source.done === true) return null
