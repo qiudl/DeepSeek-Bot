@@ -70,4 +70,6 @@ m5max 隔离 `req6148agent` Profile 后续又验证历史模式：一个带 `sys
 
 m5max 隔离冷启动探针确认：`resolveAgent()` 本身会取得 Session 写句柄，并将 Agent 注册到当前 DSH Host；之后不可再对同一 Session 调用 `agents.resume()`，否则 DSH 报 `SessionAlreadyOwnedError`。核验器不修改 DS Bot 团队状态，但 DSH 打开 Session 时可能补写生命周期事件；其“只读”仅指不激活团队、不改原团队文件，正式流程应复用已解析的 Agent 并限制打开数量。隔离旧段重启后由 `resolveAgent()` 独立打开，122 条来源事件前缀和 30 条消息均保持一致。
 
+来源读取改用 DSH 公共 `ctx.sessionPersistence.open(id, 'read')`：该 seam 不取得写入权，返回已验证的当前逻辑事件，旧物理格式由 DSH 后端在内存中准备。`team-import-source.js` 只允许当前来源 Profile 中已列入导入计划的团队 Session ID，先按 `stat` 拒绝过大记录，再有界读取、关闭句柄并复核同一服务实例的修订及事件数；只返回事件、数量和摘要，不返回带绝对工作目录的 header。m5max 隔离 mock 来源 10 个团队 Session 经此接口读取共 658 条事件，与此前独立解码计数相同。正式 Host 还须认证计划来源，不能接受远端自造计划。此探针没有运行在 Boston 真实 Profile；正式传输仍须定义加密分片、附件和跨设备来源摘要，不能把 mock 成功当作真实迁移许可。
+
 暂存器还按真实路径拒绝将暂存放进来源或目标正式记忆目录，并拒绝符号链接形式的暂存上级目录。最终代码在声明版 DSH 下完整单测 891 通过、2 跳过、0 失败，lint 0 错误，生成物检查通过；固定版 DSH 的隔离 mock Web 烟测 52 步全部通过，Web 与 mock 已停止。这些验证没有写入真实 Profile。
