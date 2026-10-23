@@ -62,5 +62,38 @@ export function install(rt) {
       const source = await rt.prepareNativeRoomSource(roomId)
       return source ? { room_id: roomId, source } : null
     },
+    async userMessages({ roomId, afterSeq = 0, limit = 50 } = {}) {
+      if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+        !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > 50) return { state: 'invalid' }
+      await rt.refresh()
+      if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+      const room = rt.roomOf(roomId)
+      if (!room || room.nativeSource?.state !== 'captured' ||
+        room.nativeSource.roomId !== roomId ||
+        room.nativeSource.workspaceId !== rt.state.workspaceId) return { state: 'unavailable' }
+      const lastSeq = room.seq ?? 0
+      const log = room.log ?? []
+      if (!Number.isSafeInteger(lastSeq) || lastSeq < 0 || afterSeq > lastSeq ||
+        !Array.isArray(log) || (lastSeq > 0 && log.at(-1)?.seq !== lastSeq))
+        return { state: 'unavailable' }
+      if (afterSeq < lastSeq && (log.length === 0 || log[0]?.seq > afterSeq + 1))
+        return { state: 'history_gap' }
+      const lines = log.filter(line => line.seq > afterSeq).slice(0, limit)
+      const messages = []
+      let nextSeq = afterSeq
+      for (const line of lines) {
+        if (line.seq !== nextSeq + 1) return { state: 'history_gap' }
+        nextSeq = line.seq
+        if (line.sourceKind !== 'user') continue
+        if (line.botId !== undefined || typeof line.sourceMessageId !== 'string' ||
+          line.sourceMessageId.length === 0 || line.sourceMessageId.length > 256 ||
+          typeof line.text !== 'string' || line.text.length === 0 ||
+          line.text.length > 16_000 || line.length !== undefined)
+          return { state: 'unverifiable_message', seq: line.seq }
+        messages.push({ seq: line.seq, message_id: line.sourceMessageId, text: line.text })
+      }
+      return { state: 'ok', room_id: roomId, next_seq: nextSeq, last_seq: lastSeq, messages }
+    },
   })
 }

@@ -85,3 +85,43 @@ test('a missing room, busy room or non-writer cannot create a Source', async () 
   assert.equal(f.captures, 0)
   assert.equal(fixture(false).rt.prepareNativeRoomSource, undefined)
 })
+
+test('native room reads preserve original user message IDs and advance across Bot lines', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  f.room.seq = 4
+  f.room.log = [
+    { seq: 1, who: 'User', sourceKind: 'user', sourceMessageId: 'message-1', text: 'first' },
+    { seq: 2, who: 'Bot', botId: 'one', text: 'reply' },
+    { seq: 3, who: 'User', sourceKind: 'user', sourceMessageId: 'message-3', text: '@Agent help' },
+    { seq: 4, who: 'Bot', botId: 'two', text: 'reply' },
+  ]
+  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 2 }), {
+    state: 'ok', room_id: f.room.id, next_seq: 2, last_seq: 4,
+    messages: [{ seq: 1, message_id: 'message-1', text: 'first' }],
+  })
+  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 2, limit: 2 }), {
+    state: 'ok', room_id: f.room.id, next_seq: 4, last_seq: 4,
+    messages: [{ seq: 3, message_id: 'message-3', text: '@Agent help' }],
+  })
+})
+
+test('native room reads fail closed on a lost or unverifiable message', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  f.room.seq = 3
+  f.room.log = [{ seq: 2, who: 'User', sourceKind: 'user', sourceMessageId: 'message-2', text: 'later' },
+    { seq: 3, who: 'Bot', botId: 'one', text: 'reply' }]
+  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+    { state: 'history_gap' })
+  f.room.log.unshift({ seq: 1, who: 'User', sourceKind: 'user', text: 'legacy' })
+  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+    { state: 'unverifiable_message', seq: 1 })
+  f.room.log[0].sourceMessageId = 'message-1'
+  f.room.log[0].length = 50_000
+  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+    { state: 'unverifiable_message', seq: 1 })
+  f.setWriter(false)
+  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+    { state: 'unavailable' })
+})
