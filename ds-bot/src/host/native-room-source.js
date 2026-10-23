@@ -42,8 +42,11 @@ export function queueNativeRoomTurn(room, participant) {
   const existing = room.nativeTurnOutbox.find(turn => turn.key === key)
   if (existing) return existing
   if (room.nativeTurnOutbox.length >= 1000) return null
+  const order = (room.nativeTurnSeq ?? 0) + 1
+  if (!Number.isSafeInteger(order)) return null
+  room.nativeTurnSeq = order
   const turn = { key, turnId: turnId(room.id, key), groupId: member.groupId, memberId: member.memberId,
-    cycle: member.cycle, triggerRoomSeq: line.seq, state: 'pending' }
+    cycle: member.cycle, triggerRoomSeq: line.seq, order, state: 'pending' }
   room.nativeTurnOutbox.push(turn)
   return turn
 }
@@ -253,7 +256,7 @@ export function install(rt) {
           member_id: memberId, cycle,
           next_seq: turns.at(-1)?.triggerRoomSeq ?? cursor,
           turns: turns.map(turn => ({ turn_id: turn.turnId,
-            trigger_room_seq: turn.triggerRoomSeq })) }
+            trigger_room_seq: turn.triggerRoomSeq, turn_order: turn.order })) }
       })
     },
     async acknowledgeMessages({ roomId, memberId, cycle, throughSeq } = {}) {

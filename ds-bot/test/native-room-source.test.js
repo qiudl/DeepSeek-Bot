@@ -200,13 +200,13 @@ test('native turns queue once for an original post and the current member cycle'
   assert.match(first.turnId, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
   assert.deepEqual(first, { key: `1:${MEMBER}:1`, turnId: first.turnId,
     groupId: GROUP, memberId: MEMBER,
-    cycle: 1, triggerRoomSeq: 1, state: 'pending' })
+    cycle: 1, triggerRoomSeq: 1, order: 1, state: 'pending' })
   assert.equal(queueNativeRoomTurn(f.room, participant), first)
   assert.equal(f.room.nativeTurnOutbox.length, 1)
   assert.deepEqual(await f.nativeRoomService.roomTurns({ roomId: f.room.id,
     memberId: MEMBER, cycle: 1, afterSeq: 0 }), { state: 'turns', room_id: f.room.id,
     group_id: GROUP, member_id: MEMBER, cycle: 1, next_seq: 1,
-    turns: [{ turn_id: first.turnId, trigger_room_seq: 1 }] })
+    turns: [{ turn_id: first.turnId, trigger_room_seq: 1, turn_order: 1 }] })
   assert.equal(queueNativeRoomTurn(f.room, { memberId: MEMBER, cycle: 2 }), null)
   f.room.log = [{ seq: 2, sourceKind: 'user', sourceMessageId: 'message-2',
     text: '中'.repeat(6000) }]
