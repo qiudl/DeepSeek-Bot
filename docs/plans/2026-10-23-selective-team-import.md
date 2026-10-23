@@ -40,3 +40,5 @@
 候选状态代码增加后，声明版 DSH 的完整单测为 875 通过、2 跳过、0 失败，lint 0 错误，客户端生成物检查通过；固定版 DSH 的隔离 mock Web 烟测 52 步全部通过。对烟测产出的实际 DS Bot 状态做只读演练，来源 3 个 Bot、1 个群聊被映射成目标 4 个 Bot、1 个群聊，目标原 Bot 保留。演练没有写入任何 Profile，也没有证明原生 Session 或记忆可迁入。
 
 事件映射器增加后，对同一隔离 mock 团队 10 个 Session（4 个活动段）的 658 条已解码事件做只读预检与映射，数量一致且全部通过；这仍未执行 DSH `ctx.agents.create({ seed })`，不构成模型上下文连续性的验收。
+
+随后在另一个**隔离 Profile** 中，以正式 `runProfile` 和 `ctx.agents.create({ seed, meta, setup })` 导入一段来自上述 mock 团队的 173 条活动历史事件；setup 按 DSH 契约挂载 `standard` preset 并返回 `void`，目标 Workspace 与标题由目标机创建，`ctx.sessions.flush(session)` 后关闭并重新启动。重启前后均恢复 47 条聊天消息；选择目标 mock 模型后，新回合正确回答旧聊天中的独有事实。两端隔离 Web 与 mock 进程均已停止。此试验仍未导入所有 Bot/群聊/记忆，也未对 Boston 真实历史运行，更不表示长期同步已可用。
