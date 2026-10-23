@@ -8,6 +8,7 @@
 - 一个 Bot 的 `id` 是第一段 Session ID；`sessionId` 指当前聊天段；`segments[]` 指旧段。群聊另有成员 Session 和旧段。只合并 `state.json` 会丢聊天与模型上下文。
 - DSH `sessionController.create` 只创建空白 Session；`ctx.agents.create({ seed })` 可经正式插件 API 建立带旧历史的持久 Agent。隔离 mock 试验已验证旧用户/助手消息进入下一次模型请求并在重启后恢复。真实历史和 DS Bot 映射尚未通过验证。
 - DSH V4 校验要求受保护的首个 `system/message` surface 节点。当前两端活动段符合；没有可见聊天的旧段应当只作为历史段保留。
+- DSH `SessionStore` 明确只管理内存，直接 `ctx.sessions.create({ seed })` 不会自动附加持久日志写句柄；Agent 工厂的 `ctx.agents.create({ seed })` 才会在发布前写入 seed。历史段不能用裸 Session 创建冒充持久迁入，须在隔离 Profile 验证旧段经 Agent 工厂持久化、重启后可读，同时禁止其接收新回合。m5max 本轮 SSH 超时，这项实测待恢复。
 - 旧 Session header 中的 `cwd`、原模型选择、密钥和插件授权不能直接转移到目标设备。目标 Agent 应使用目标 Workspace 的绝对目录、目标机可用模型和目标 Agent preset。
 - 隔离 mock 的 10 个团队 Session 共含 240 个 Zstandard 帧；只解压首帧会误以为 Session 没有聊天。逐帧只读检查发现结构化引用位于投递回执的 `data.sessionId`、用户消息及收件箱插入记录的 `senderSessionId`/`roomId`；绝对 `cwd` 位于 Session header。事件映射器只改这些结构化 ID，保留正文，未知结构化 Session 引用拒绝。此证据来自 mock，不能代替真实历史验证。
 
