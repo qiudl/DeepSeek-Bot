@@ -303,6 +303,11 @@ export function install(rt) {
     return warnReadOnly()
   }
 
+  // A remote authority must prove this Host owns the team lock. The ordinary
+  // local UI can keep working after a lock failure, but it cannot be canonical.
+  const exclusiveWriter = () => !stopped && !importRecoveryRequired() &&
+    stuck === undefined && !lockBroken && holder === undefined && lock.owns()
+
   const save = () => {
     if (stopped) return writing
     indexSessions()
@@ -439,7 +444,7 @@ export function install(rt) {
   const isAdminOf = (room, id) => id !== undefined && room.admin === id
 
   Object.assign(rt, {
-    state, load, save, refresh, readOnly, own,
+    state, load, save, refresh, readOnly, exclusiveWriter, own,
     botOf, roomOf, isMain, chatOf, selfOf, isBotSession,
     chatOwners, groupOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,

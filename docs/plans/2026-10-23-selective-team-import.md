@@ -29,6 +29,8 @@
 
 `channel.js` 当前的内部 `READS` 集合不是远程安全边界：其中的 `browser-result`、`diagnostics-clear`、`update-install`、`dsh-update-install` 等具有副作用；`state` 返回值还含密钥名称、能力和模型目录。远程适配必须另建精确的只读投影和写命令枚举，并逐字段过滤响应，不能复用这个集合或直接透传 `state`。
 
+`team-remote-read.js` 现通过 Profile-local `dsBotSlarkRemoteRead` 服务只提供 `team` 目录分页：Bot 的逻辑 ID、名称、角色和主 Bot 标记，以及群聊逻辑 ID、名称和成员。它要求本 Host 真正持有团队独占写锁，拒绝导入标记、只读副本和失锁状态；游标绑定团队修订号并限制返回字节。模型、工作目录、指令、密钥、原生 Session ID 与群日志均不在响应中。固定 DSH 分支的私有 worker 路由使用 Host token 调用该服务，但尚无 Unix 控制方法、Slark 设备通道、聊天/记忆读取或发送回执；因此 Boston 现在仍不能通过它访问 m5max 团队。
+
 ## 待验证门槛
 
 - 真实发行格式的完整旧历史是否能脱敏迁入并供下一次模型回合使用，尤其是工具结果、系统提示、附件和历史段。
