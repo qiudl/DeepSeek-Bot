@@ -1722,10 +1722,16 @@ function mentionSpans(text, bots, { references = [] } = {}) {
     ...referenceSpans(value, references)
   ];
   const byLength = bots.filter((bot) => bot?.name).sort((a, b) => b.name.length - a.name.length);
+  const nameCounts = /* @__PURE__ */ new Map();
+  for (const bot of byLength) {
+    const key = bot.name.toLowerCase();
+    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+  }
   const spans = [];
   for (let at = value.indexOf("@"); at !== -1; at = value.indexOf("@", at + 1)) {
     if (at > 0 && ADDRESS_BEFORE.test(value[at - 1]) || overlaps(skip, at, at + 1)) continue;
     const bot = byLength.find((candidate) => fitsAt(value, at + 1, candidate.name));
+    if (bot && nameCounts.get(bot.name.toLowerCase()) !== 1) continue;
     const all = bot ? void 0 : ALL_WORDS.find((word) => fitsAt(value, at + 1, word));
     if (!bot && !all) continue;
     const end = at + 1 + (bot ? bot.name.length : all.length);

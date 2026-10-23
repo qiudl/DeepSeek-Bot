@@ -29,6 +29,13 @@ test('mentionsIn finds members in order, longest name first', () => {
   assert.deepEqual(names(mentionsIn('no mentions', members)), { all: false, found: [] })
 })
 
+test('an ambiguous member name never chooses an arbitrary @ target', () => {
+  const same = [{ id: 'bot', name: 'Writer' }, { id: 'agent', name: 'Writer' }]
+  assert.deepEqual(names(mentionsIn('@Writer please help', same)), { all: false, found: [] })
+  assert.deepEqual(names(mentionsIn('@Writer 2 please help', [...same, { id: 'other', name: 'Writer 2' }])),
+    { all: false, found: ['Writer 2'] })
+})
+
 test('isPass takes empty replies and [PASS] forms', () => {
   for (const text of ['', '[PASS]', ' 【pass】 then more', '(pass)', 'pass.', 'Pass！', '  PASS  ']) assert.equal(isPass(text), true, text)
   for (const text of ['passing the ball', 'I pass on this one', 'ok']) assert.equal(isPass(text), false, text)
