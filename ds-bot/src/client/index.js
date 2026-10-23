@@ -38,6 +38,7 @@ import { MEMBER_CSS, MemberDock } from './member-status.js'
 import { USER_MESSAGE_CSS, UserMessageCell, canDrawUserMessages } from './user-message.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
+import { pumpNativeRoomSnapshot } from './native-room-sync.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
 
@@ -192,6 +193,25 @@ export function apply(ctx) {
     void loop()
     return () => { stopped = true; clearTimeout(timer); document.removeEventListener('visibilitychange', wake) }
   }, 'ds-bot: roster poll')
+
+  // The browser supplies only the verified bridge Session and cloud member ID.
+  // Host reads original room lines and advances its cursor after Slark receipts.
+  ctx.effect(() => {
+    let stopped = false
+    let timer
+    const loop = async () => {
+      clearTimeout(timer)
+      if (stopped) return
+      const host = window.__DSH_DESKTOP_HOST__
+      if (!document.hidden && host?.collaborationNativeRoomPump) {
+        await pumpNativeRoomSnapshot(roster.getSnapshot(), host,
+          () => !stopped && window.__DSH_DESKTOP_HOST__ === host)
+      }
+      timer = setTimeout(loop, 2000)
+    }
+    void loop()
+    return () => { stopped = true; clearTimeout(timer) }
+  }, 'ds-bot: native Slark room sync')
 
   // Plugin updates: every window that opens asks the host once (the host keeps its
   // answer for a while), again each hour, and every two seconds while installing.
