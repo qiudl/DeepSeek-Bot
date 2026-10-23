@@ -259,6 +259,10 @@ test('leaving stops reads and a new cycle begins after the old room sequence', a
   assert.deepEqual(await f.nativeRoomService.leaveAgent({ roomId: f.room.id, memberId: MEMBER, cycle: 1 }),
     { state: 'left', left_room_seq: 1 })
   assert.deepEqual(f.room.nativeTurnOutbox, [])
+  f.room.nativeTurnOutbox.push(pending)
+  assert.deepEqual(await f.nativeRoomService.leaveAgent({ roomId: f.room.id, memberId: MEMBER,
+    cycle: 1 }), { state: 'left', left_room_seq: 1 })
+  assert.deepEqual(f.room.nativeTurnOutbox, [])
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: MEMBER,
     cycle: 1, afterSeq: 0 }), { state: 'unavailable' })
   assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,

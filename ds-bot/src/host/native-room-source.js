@@ -334,7 +334,15 @@ export function install(rt) {
         const room = rt.roomOf(roomId)
         const member = room?.nativeMembers?.[memberId]
         if (!member || member.cycle !== cycle) return { state: 'unavailable' }
-        if (member.state === 'left') return { state: 'left', left_room_seq: member.leftRoomSeq }
+        if (member.state === 'left') {
+          const priorTurns = room.nativeTurnOutbox
+          if (priorTurns?.some(turn => turn.memberId === memberId && turn.cycle === cycle)) {
+            room.nativeTurnOutbox = priorTurns.filter(turn =>
+              turn.memberId !== memberId || turn.cycle !== cycle)
+            try { await rt.save() } catch (error) { room.nativeTurnOutbox = priorTurns; throw error }
+          }
+          return { state: 'left', left_room_seq: member.leftRoomSeq }
+        }
         if (member.state !== 'active') return { state: 'conflict' }
         const priorOutbox = room.nativeOutbox
         const priorTurns = room.nativeTurnOutbox
