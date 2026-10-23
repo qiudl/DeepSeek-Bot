@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { isPass, mentionsIn, openingSpeakers, referenceNote, stripOwnName } from '../src/host/groups.js'
+import { groupParticipants, isPass, mentionsIn, openingSpeakers, referenceNote,
+  stripOwnName } from '../src/host/groups.js'
 import { attachReference } from '../src/host/turns.js'
 
 const members = [{ name: 'M' }, { name: 'Mx' }, { name: 'K' }, { name: 'Writer' }]
@@ -17,6 +18,23 @@ test('a joined Slark Agent joins ordinary turns and an explicit mention takes pr
   assert.deepEqual(choose({ botId: 'writer', member: true, text: '@Agent please' }), ['Agent'])
   assert.deepEqual(choose({ botId: agent.id, member: true, text: '@Writer please' }), ['Writer'])
   assert.deepEqual(openingSpeakers({ ...room, mode: 'admin' }, { text: 'hello' }, [...bots, agent]).map(member => member.name), ['Admin'])
+})
+
+test('the native roster joins actual turn selection only after the bridge is enabled', () => {
+  const bots = [{ id: 'admin', name: 'Admin' }]
+  const agent = { groupId: 'group-1', memberId: 'member-1', cycle: 2,
+    name: 'Slark Agent · Member 1', state: 'active' }
+  const room = { admin: 'admin', mode: 'everyone', nativeGroupId: 'group-1',
+    nativeMembers: { 'member-1': agent, 'member-2': { ...agent, memberId: 'member-2',
+      state: 'left' } } }
+  assert.deepEqual(groupParticipants(room, bots), bots)
+  room.nativeTurnBridge = true
+  const everyone = groupParticipants(room, bots)
+  assert.deepEqual(everyone.map(member => member.id), ['admin', 'slark-agent:member-1'])
+  assert.deepEqual(openingSpeakers(room, { text: 'hello' }, everyone).map(member => member.id),
+    ['admin', 'slark-agent:member-1'])
+  assert.deepEqual(openingSpeakers(room, { text: '@Slark Agent · Member 1 help' }, everyone)
+    .map(member => member.id), ['slark-agent:member-1'])
 })
 
 test('mentionsIn finds members in order, longest name first', () => {

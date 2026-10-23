@@ -25,7 +25,7 @@ import { escapeRegExp, headOf, splitRef, textOf } from './text.js'
 import { mentionSpans, speakerOf } from '../shared/mentions.js'
 import { GROUP_REF, output } from './tools.js'
 import { failureLine } from './turns.js'
-import { recordNativeRoomLine } from './native-room-source.js'
+import { queueNativeRoomTurn, recordNativeRoomLine } from './native-room-source.js'
 
 const ROOM_LOG_MAX = 60
 const ROOM_FIRST_LOOK = 12
@@ -99,6 +99,17 @@ export function openingSpeakers(room, opener, everyone) {
   return admin ? [admin, ...members.filter(member => member !== admin)] : members
 }
 
+export function groupParticipants(room, bots) {
+  // The private Host turn reader and cloud receipt path must be live before this
+  // room flag is enabled. Joining alone does not put an Agent into executable slots.
+  if (room.nativeTurnBridge !== true) return bots
+  const agents = Object.values(room.nativeMembers ?? {})
+    .filter(member => member.state === 'active' && member.groupId === room.nativeGroupId)
+    .map(member => ({ id: `slark-agent:${member.memberId}`, name: member.name,
+      kind: 'slark_agent', memberId: member.memberId, cycle: member.cycle }))
+  return [...bots, ...agents]
+}
+
 // What the user referenced in this round, for a member that has not been shown it yet.
 export const referenceNote = references => (references?.length
   ? `Conversations the user referenced in this round:\n\n${references.map(reference => reference.text).join('\n\n')}`
@@ -137,6 +148,7 @@ const fileLine = file => `[File "${file.name}" (${file.bytes} bytes) attached]`
 
 export function install(rt) {
   const { ctx } = rt
+  const participants = room => groupParticipants(room, room.members.map(rt.botOf).filter(Boolean))
 
   // A long line keeps its start in state.json, which is written whole on every save,
   // and what a member reads of it (GROUP_LINE_READ) in a file of its own: written once,
@@ -238,7 +250,7 @@ export function install(rt) {
   // an earlier round (an old count-off, say) never reads as part of the current one.
   // `files` are the files of the lines shown, which go to the member with the prompt.
   function roomPrompt(room, member, round) {
-    const peers = room.members.filter(id => id !== member.id).map(rt.botOf).filter(Boolean)
+    const peers = participants(room).filter(peer => peer.id !== member.id)
       .map(bot => `${bot.name}${rt.isAdminOf(room, bot.id) ? ' (admin)' : ''}`)
     const leads = rt.isAdminOf(room, member.id)
     const lines = unseenLines(room, member.id)
@@ -415,7 +427,7 @@ export function install(rt) {
     const lines = waitingLines(agent).filter(line => agent.inbox.remove(line.id))
     if (lines.length === 0) return 0
     const before = round.slots.length
-    const members = room.members.map(rt.botOf).filter(Boolean)
+    const members = participants(room)
     for (const line of lines) {
       appendRoom(room, { who: 'User', text: line.text, sourceKind: 'user', sourceMessageId: line.id })
       round.replies.push({ kind: 'user', text: line.text, time: Date.now() })
@@ -439,6 +451,24 @@ export function install(rt) {
       limit += drainRoomInbox(room, round, turns, index, agent)
       if (index >= round.slots.length) break
       const slot = round.slots[index]
+      const native = participants(room).find(peer => peer.id === slot.id && peer.kind === 'slark_agent')
+      if (native) {
+        const turn = queueNativeRoomTurn(room, native)
+        if (!turn) {
+          slot.status = 'failed'
+          round.failed.push(native.name)
+          round.replies.push({ kind: 'failed', botId: native.id, name: native.name,
+            code: 'NATIVE_TURN', text: 'The Agent turn could not be recorded.', time: Date.now() })
+          continue
+        }
+        await rt.save()
+        round.turns += 1
+        turns.set(native.id, (turns.get(native.id) ?? 0) + 1)
+        slot.status = 'working'
+        round.replies.push({ kind: 'working', botId: native.id, name: native.name,
+          time: Date.now() })
+        continue
+      }
       const member = rt.botOf(slot.id)
       // Settings may change mid-round, for example when the admin removes someone.
       if (member === undefined || !room.members.includes(slot.id)) {
@@ -499,7 +529,7 @@ export function install(rt) {
       if (spoken.length === 0) continue
       // Only the admin's "@all" calls everyone, so a member cannot set off a storm.
       const leads = rt.isAdminOf(room, member.id)
-      const everyone = room.members.map(rt.botOf).filter(Boolean)
+      const everyone = participants(room)
       const others = everyone.filter(other => other.id !== member.id)
       const { all, found: named } = mentionsIn(spoken.join('\n\n'), everyone)
       const found = named.filter(other => other.id !== member.id)
@@ -550,7 +580,7 @@ export function install(rt) {
       const opener = posts.findLast(post => !event(post) && !callsNobody(post)) ?? posts.findLast(post => !event(post)) ?? posts.at(-1)
       const references = posts.flatMap(post => post.references ?? [])
       // A member a Bot's post calls by name works for that Bot.
-      const named = opener.botId === undefined ? [] : mentionsIn(opener.text ?? '', room.members.map(rt.botOf).filter(Boolean)).found
+      const named = opener.botId === undefined ? [] : mentionsIn(opener.text ?? '', participants(room)).found
       const round = {
         roomId: room.id,
         members: room.members,
@@ -695,8 +725,7 @@ export function install(rt) {
   // the admin answers alone in admin mode, or first of everyone. What a member posts
   // after its round moved on is answered by the member that asked for it; work the
   // user asked for is left for the user to read.
-  const opening = (room, opener) => openingSpeakers(room, opener,
-    room.members.map(rt.botOf).filter(Boolean))
+  const opening = (room, opener) => openingSpeakers(room, opener, participants(room))
 
   // A Bot's message into the group's own Session, which relays it as a new round.
   // While a round runs, the post goes into the group's log and that round's replies at
@@ -763,7 +792,7 @@ export function install(rt) {
     const member = rt.botOf(owner?.botId)
     return room !== undefined && member !== undefined && room.members.includes(member.id) ? { room, member } : undefined
   }
-  const callsIn = (room, member, text) => mentionsIn(text, room.members.map(rt.botOf).filter(Boolean)).found.some(bot => bot.id !== member.id)
+  const callsIn = (room, member, text) => mentionsIn(text, participants(room)).found.some(bot => bot.id !== member.id)
 
   // What a member says while it works, into the group. While the member holds its place
   // in a round, it joins that round. Later, it joins whatever round runs in the group, or

@@ -17,6 +17,30 @@ const botLineId = (roomId, seq) => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
 }
 
+// A queued turn is identified by the triggering room line and the exact member
+// cycle. Replaying a group relay cannot create a second request for that line.
+export function queueNativeRoomTurn(room, participant) {
+  const member = room.nativeMembers?.[participant.memberId]
+  const line = room.log?.at(-1)
+  if (!room.nativeTurnBridge || !member || member.state !== 'active' ||
+    member.groupId !== room.nativeGroupId || member.cycle !== participant.cycle ||
+    !line || !Number.isSafeInteger(line.seq) || line.seq <= member.joinedRoomSeq ||
+    line.length !== undefined || typeof line.text !== 'string' ||
+    !textFitsHostFrame(line.text) ||
+    !(line.sourceKind === 'user' && typeof line.sourceMessageId === 'string' &&
+      line.sourceMessageId.length > 0 ||
+      typeof line.botId === 'string' && line.botId.length > 0 && line.kind === undefined)) return null
+  const key = `${line.seq}:${member.memberId}:${member.cycle}`
+  room.nativeTurnOutbox ??= []
+  const existing = room.nativeTurnOutbox.find(turn => turn.key === key)
+  if (existing) return existing
+  if (room.nativeTurnOutbox.length >= 1000) return null
+  const turn = { key, groupId: member.groupId, memberId: member.memberId,
+    cycle: member.cycle, triggerRoomSeq: line.seq, state: 'pending' }
+  room.nativeTurnOutbox.push(turn)
+  return turn
+}
+
 // The outbox lives in the same state.json write as the room log. Keep every room
 // sequence, including lines that are not user instructions, so a cursor cannot
 // silently skip a missing message when the visible 60-line log rolls over.

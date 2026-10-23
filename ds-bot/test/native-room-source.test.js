@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { install, recordNativeRoomLine } from '../src/host/native-room-source.js'
+import { install, queueNativeRoomTurn, recordNativeRoomLine } from '../src/host/native-room-source.js'
 
 const GROUP = '11111111-1111-4111-8111-111111111111'
 const MEMBER = '22222222-2222-4222-8222-222222222222'
@@ -185,6 +185,27 @@ test('two joined Agents independently read and acknowledge the same native lines
   assert.deepEqual(await f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
     memberId: NEXT_MEMBER, cycle: 1, throughSeq: 1 }), { state: 'acknowledged', through_seq: 1 })
   assert.deepEqual(f.room.nativeOutbox, [])
+})
+
+test('native turns queue once for an original post and the current member cycle', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
+  const participant = { memberId: MEMBER, cycle: 1 }
+  f.room.seq = 1
+  f.room.log = [{ seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'hello' }]
+  assert.equal(queueNativeRoomTurn(f.room, participant), null)
+  f.room.nativeTurnBridge = true
+  const first = queueNativeRoomTurn(f.room, participant)
+  assert.deepEqual(first, { key: `1:${MEMBER}:1`, groupId: GROUP, memberId: MEMBER,
+    cycle: 1, triggerRoomSeq: 1, state: 'pending' })
+  assert.equal(queueNativeRoomTurn(f.room, participant), first)
+  assert.equal(f.room.nativeTurnOutbox.length, 1)
+  assert.equal(queueNativeRoomTurn(f.room, { memberId: MEMBER, cycle: 2 }), null)
+  f.room.log = [{ seq: 2, sourceKind: 'user', sourceMessageId: 'message-2',
+    text: '中'.repeat(6000) }]
+  assert.equal(queueNativeRoomTurn(f.room, participant), null)
+  assert.equal(f.room.nativeTurnOutbox.length, 1)
 })
 
 test('a failed member save is not reported as a durable join', async () => {
