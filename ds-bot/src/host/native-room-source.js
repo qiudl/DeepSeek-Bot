@@ -31,7 +31,8 @@ export function queueNativeRoomTurn(room, participant) {
   const line = room.log?.at(-1)
   if (!room.nativeTurnBridge || !member || member.state !== 'active' ||
     member.groupId !== room.nativeGroupId || member.cycle !== participant.cycle ||
-    !line || !Number.isSafeInteger(line.seq) || line.seq <= member.joinedRoomSeq ||
+    !line || !Number.isSafeInteger(line.seq) ||
+    line.seq <= (member.nativeTurnAckSeq ?? member.joinedRoomSeq) ||
     line.length !== undefined || typeof line.text !== 'string' ||
     !textFitsHostFrame(line.text) ||
     !(line.sourceKind === 'user' && typeof line.sourceMessageId === 'string' &&
@@ -165,7 +166,8 @@ export function install(rt) {
         room.nativeMembers = { ...(priorMembers ?? {}) }
         room.nativeOutbox ??= []
         room.nativeMembers[memberId] = { groupId, memberId, cycle, projectId, agentId, name,
-          state: 'active', joinedRoomSeq: room.seq, readThrough: room.seq, ackSeq: room.seq }
+          state: 'active', joinedRoomSeq: room.seq, readThrough: room.seq, ackSeq: room.seq,
+          nativeTurnAckSeq: room.seq }
         compact(room)
         try { await rt.save() } catch (error) {
           if (priorGroupId === undefined) delete room.nativeGroupId
@@ -248,7 +250,7 @@ export function install(rt) {
           member.cycle !== cycle || member.groupId !== room.nativeGroupId ||
           !Number.isSafeInteger(room.seq) || afterSeq > room.seq ||
           afterSeq !== 0 && afterSeq < member.joinedRoomSeq) return { state: 'unavailable' }
-        const cursor = afterSeq === 0 ? member.joinedRoomSeq : afterSeq
+        const cursor = afterSeq === 0 ? (member.nativeTurnAckSeq ?? member.joinedRoomSeq) : afterSeq
         const turns = (room.nativeTurnOutbox ?? []).filter(turn => turn.memberId === memberId &&
           turn.cycle === cycle && turn.groupId === member.groupId &&
           turn.triggerRoomSeq > cursor && turn.state === 'pending').slice(0, limit)
@@ -257,6 +259,40 @@ export function install(rt) {
           next_seq: turns.at(-1)?.triggerRoomSeq ?? cursor,
           turns: turns.map(turn => ({ turn_id: turn.turnId,
             trigger_room_seq: turn.triggerRoomSeq, turn_order: turn.order })) }
+      })
+    },
+    async acknowledgeTurns({ roomId, memberId, cycle, turnIds } = {}) {
+      return serialize(async () => {
+        if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+          !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
+          !Array.isArray(turnIds) || turnIds.length < 1 || turnIds.length > 3 ||
+          turnIds.some(id => typeof id !== 'string' || !UUID.test(id)) ||
+          new Set(turnIds).size !== turnIds.length) return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        const member = room?.nativeMembers?.[memberId]
+        if (!room || !member || member.state !== 'active' || member.cycle !== cycle ||
+          member.groupId !== room.nativeGroupId || room.nativeTurnBridge !== true)
+          return { state: 'unavailable' }
+        const selected = (room.nativeTurnOutbox ?? []).filter(turn => turn.memberId === memberId &&
+          turn.cycle === cycle && turn.groupId === member.groupId && turn.state === 'pending')
+          .slice(0, turnIds.length)
+        if (selected.length !== turnIds.length ||
+          selected.some((turn, index) => turn.turnId !== turnIds[index]))
+          return { state: 'conflict' }
+        const prior = room.nativeTurnOutbox
+        const priorMember = member
+        const selectedIds = new Set(turnIds)
+        room.nativeTurnOutbox = prior.filter(turn => !selectedIds.has(turn.turnId))
+        room.nativeMembers = { ...room.nativeMembers, [memberId]: { ...member,
+          nativeTurnAckSeq: selected.at(-1).triggerRoomSeq } }
+        try { await rt.save() } catch (error) {
+          room.nativeTurnOutbox = prior
+          room.nativeMembers = { ...room.nativeMembers, [memberId]: priorMember }
+          throw error
+        }
+        return { state: 'turns_acknowledged', turn_ids: turnIds }
       })
     },
     async acknowledgeMessages({ roomId, memberId, cycle, throughSeq } = {}) {

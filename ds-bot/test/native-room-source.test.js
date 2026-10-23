@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { randomUUID } from 'node:crypto'
 import { install, queueNativeRoomTurn, recordNativeRoomLine } from '../src/host/native-room-source.js'
 
 const GROUP = '11111111-1111-4111-8111-111111111111'
@@ -207,11 +208,26 @@ test('native turns queue once for an original post and the current member cycle'
     memberId: MEMBER, cycle: 1, afterSeq: 0 }), { state: 'turns', room_id: f.room.id,
     group_id: GROUP, member_id: MEMBER, cycle: 1, next_seq: 1,
     turns: [{ turn_id: first.turnId, trigger_room_seq: 1, turn_order: 1 }] })
+  assert.deepEqual(await f.nativeRoomService.acknowledgeTurns({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, turnIds: [randomUUID()] }), { state: 'conflict' })
+  f.setSaveFailure(true)
+  await assert.rejects(f.nativeRoomService.acknowledgeTurns({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, turnIds: [first.turnId] }), /save_failed/)
+  assert.equal(f.room.nativeTurnOutbox.length, 1)
+  f.setSaveFailure(false)
+  assert.deepEqual(await f.nativeRoomService.acknowledgeTurns({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, turnIds: [first.turnId] }),
+  { state: 'turns_acknowledged', turn_ids: [first.turnId] })
+  assert.deepEqual(f.room.nativeTurnOutbox, [])
+  assert.equal(queueNativeRoomTurn(f.room, participant), null)
+  assert.deepEqual(await f.nativeRoomService.roomTurns({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0 }), { state: 'turns', room_id: f.room.id,
+    group_id: GROUP, member_id: MEMBER, cycle: 1, next_seq: 1, turns: [] })
   assert.equal(queueNativeRoomTurn(f.room, { memberId: MEMBER, cycle: 2 }), null)
   f.room.log = [{ seq: 2, sourceKind: 'user', sourceMessageId: 'message-2',
     text: '中'.repeat(6000) }]
   assert.equal(queueNativeRoomTurn(f.room, participant), null)
-  assert.equal(f.room.nativeTurnOutbox.length, 1)
+  assert.equal(f.room.nativeTurnOutbox.length, 0)
 })
 
 test('a failed member save is not reported as a durable join', async () => {
