@@ -13,6 +13,7 @@ import { call } from './api.js'
 import { failureLabel } from './diagnostics.js'
 import { turnReasoning, thinkingStep } from './turn-reasoning.js'
 import { FOLD_AT, FOLD_HUGE, stripLongNote, useFold } from './fold.js'
+import { noHover, useViewport, viewBottom } from './motion.js'
 import { heldCardKey } from './sources.js'
 
 export { clockLabel }
@@ -52,19 +53,31 @@ function Bubble({ text, index, roster, selfId, actions, sessionId, msgKey, menti
   const { shown, folded, control } = useFold(text, { limit: fold, whole, live })
   const key = msgKey ? `${msgKey}:${index}` : undefined
   const body = h(MarkdownText, { text: linkMentions(shown, roster.bots, selfId), streaming: live, labels: mdLabels(), variant: 'compact', fileMentions: mentions })
-  return h('div', { className: 'bt-msg' },
+  const row = useRef(null)
+  // Touch has no hover: a tap on the bubble opens its tools, a tap elsewhere
+  // closes them. Interactive targets keep their own meaning.
+  const [toolsOpen, setToolsOpen] = useState(false)
+  useDismiss(toolsOpen, () => setToolsOpen(false), [row])
+  const tapTools = (event) => {
+    if (!noHover() || event.target instanceof Element && event.target.closest('a,button,input,textarea,select,pre,code,[role=button],[role=link]')) return
+    setToolsOpen(value => !value)
+  }
+  return h('div', { ref: row, className: 'bt-msg', onClick: tapTools },
     h('div', { className: 'bt-msg-line' },
       lead,
       h('div', { className: 'bt-bubble', 'data-folded': folded || undefined },
         control ? h('div', { className: 'bt-fold-body' }, body) : body,
         control),
-      live ? null : h(MessageTools, { text: folded ? text : shown, name: roster.byId[selfId]?.name ?? t('Bot'), sessionId, react: key ? emoji => actions.toggleReaction(msgKey, index, emoji) : undefined, actions })),
+      live ? null : h(MessageTools, { text: folded ? text : shown, name: roster.byId[selfId]?.name ?? t('Bot'), sessionId, react: key ? emoji => actions.toggleReaction(msgKey, index, emoji) : undefined, actions, open: toolsOpen })),
     picked.length ? h('div', { className: 'bt-reacts' }, picked.map(emoji => h('button', {
       key: emoji, type: 'button', className: 'bt-react', 'aria-label': t('Remove reaction {emoji}', { emoji }), onClick: () => actions.toggleReaction(msgKey, index, emoji),
     }, emoji))) : null)
 }
 
 const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏']
+// Half the reaction strip: six 32px buttons at 2px gaps plus its own padding and
+// the 8px margin it keeps from the screen edge.
+const STRIP_HALF = (REACTIONS.length * 34 + 10) / 2 + 8
 
 // Closes a popover on a press outside the given elements or on Escape.
 function useDismiss(open, close, refs) {
@@ -76,29 +89,35 @@ function useDismiss(open, close, refs) {
     }
     const onKey = (event) => { if (event.key === 'Escape') { event.stopPropagation(); close() } }
     window.addEventListener('mousedown', onDown)
+    window.addEventListener('touchstart', onDown)
     window.addEventListener('keydown', onKey, true)
-    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true) }
+    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('touchstart', onDown); window.removeEventListener('keydown', onKey, true) }
   }, [open])
 }
 
-// The hover toolbar beside a reply bubble: Add reaction, Reply, More.
-function MessageTools({ text, name, sessionId, react, actions }) {
+// The hover toolbar beside a reply bubble: Add reaction, Reply, More. `open` is
+// the touch fallback: a tap on the bubble toggles it (see Bubble).
+function MessageTools({ text, name, sessionId, react, actions, open: tapped }) {
+  // The anchor element is kept, not its rect: the visible viewport can move
+  // (on-screen keyboard) while the popover is open.
   const [panel, setPanel] = useState(null)
-  const [place, setPlace] = useState(null)
   const [copied, setCopied] = useState(false)
   const tools = useRef(null)
   const pop = useRef(null)
+  const tick = useViewport()
   const close = () => setPanel(null)
   useDismiss(panel !== null, close, [tools, pop])
-  const open = (kind, event) => {
-    if (panel === kind) { close(); return }
-    const rect = event.currentTarget.getBoundingClientRect()
-    const below = rect.bottom + 220 < window.innerHeight
-    setPlace(kind === 'react'
-      ? { left: rect.left + rect.width / 2, top: rect.top - 6, '--bt-origin': 'bottom center' }
-      : { left: Math.min(rect.left, window.innerWidth - 208), ...(below ? { top: rect.bottom + 4 } : { bottom: window.innerHeight - rect.top + 4, '--bt-origin': 'bottom left' }) })
-    setPanel(kind)
-  }
+  const open = (kind, event) => { if (panel?.kind === kind) { close(); return } setPanel({ kind, node: event.currentTarget }) }
+  const place = useMemo(() => {
+    if (!panel) return null
+    const rect = panel.node.getBoundingClientRect()
+    const below = rect.bottom + 220 < viewBottom()
+    return panel.kind === 'react'
+      // The strip hangs off its center anchor: clamp the center so the strip
+      // itself stays inside the viewport.
+      ? { left: Math.min(Math.max(rect.left + rect.width / 2, STRIP_HALF), window.innerWidth - STRIP_HALF), top: rect.top - 6, '--bt-origin': 'bottom center' }
+      : { left: Math.min(rect.left, window.innerWidth - 208), ...(below ? { top: rect.bottom + 4 } : { bottom: viewBottom() - rect.top + 4, '--bt-origin': 'bottom left' }) }
+  }, [panel, tick])
   const copy = () => {
     void navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1000) })
   }
@@ -109,13 +128,13 @@ function MessageTools({ text, name, sessionId, react, actions }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
   const item = (label, Icon, run) => h('button', { key: label, type: 'button', role: 'menuitem', onClick: () => { close(); run() } }, h(Icon), label)
-  return h('div', { ref: tools, className: 'bt-tools', 'data-open': panel !== null || undefined },
-    react ? h('button', { type: 'button', className: 'bt-tool', 'aria-label': t('Add reaction'), title: t('Add reaction'), 'aria-expanded': panel === 'react', onClick: event => open('react', event) }, h(SmileIcon)) : null,
+  return h('div', { ref: tools, className: 'bt-tools', 'data-open': panel !== null || tapped || undefined },
+    react ? h('button', { type: 'button', className: 'bt-tool', 'aria-label': t('Add reaction'), title: t('Add reaction'), 'aria-expanded': panel?.kind === 'react', onClick: event => open('react', event) }, h(SmileIcon)) : null,
     sessionId ? h('button', { type: 'button', className: 'bt-tool', 'aria-label': t('Reply'), title: t('Reply'), onClick: () => actions.quote(sessionId, text) }, h(ReplyIcon)) : null,
-    h('button', { type: 'button', className: 'bt-tool', 'aria-label': t('More message actions'), title: t('More'), 'aria-haspopup': 'menu', 'aria-expanded': panel === 'more', onClick: event => open('more', event) }, copied ? h(CheckIcon) : h(DotsIcon)),
-    panel === 'react' ? createPortal(h('div', { ref: pop, className: 'bt-react-strip', role: 'menu', 'aria-label': t('Reactions'), style: place },
+    h('button', { type: 'button', className: 'bt-tool', 'aria-label': t('More message actions'), title: t('More'), 'aria-haspopup': 'menu', 'aria-expanded': panel?.kind === 'more', onClick: event => open('more', event) }, copied ? h(CheckIcon) : h(DotsIcon)),
+    panel?.kind === 'react' ? createPortal(h('div', { ref: pop, className: 'bt-react-strip', role: 'menu', 'aria-label': t('Reactions'), style: place },
       REACTIONS.map(emoji => h('button', { key: emoji, type: 'button', role: 'menuitem', 'aria-label': emoji, onClick: () => { close(); react(emoji) } }, emoji))), document.body) : null,
-    panel === 'more' ? createPortal(h('div', { ref: pop, className: 'bt-menu', role: 'menu', 'aria-label': t('Message actions'), style: place },
+    panel?.kind === 'more' ? createPortal(h('div', { ref: pop, className: 'bt-menu', role: 'menu', 'aria-label': t('Message actions'), style: place },
       item(t('Copy'), CopyIcon, copy), item(t('Download'), DownloadIcon, download)), document.body) : null)
 }
 
@@ -416,6 +435,8 @@ function chatRow(row, key, { sessionId, selfId, roster, actions, useUi }) {
     case 'divider': return h(PartLine, { key, time: row.time })
     case 'user': return h(EarlierUser, { key, row })
     case 'answer': return h(AnsweredReply, { key, node: { data: row } })
+    // A display-only view replays from the blueprint the host kept on the call.
+    case 'view': return h(WidgetCell, { key, sessionId, callId: row.callId, args: { text: name => name === 'title' ? row.title : undefined, value: name => name === 'view' ? row.view : undefined }, done: true, isError: false, roster, actions })
     case 'bot': return h(Bubbles, { key, texts: row.texts, roster, selfId, actions, sessionId: useUi ? sessionId : undefined, msgKey: useUi ? `${sessionId}:${row.time}` : undefined, useUi, fold: FOLD_HUGE })
     case 'event': {
       if (row.role === 'report') return h(GroupEvent, { key, prefix: t('Replies from'), room: roster.roomsById[row.roomId], name: t('a group chat'), roster, actions })
@@ -744,6 +765,11 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
       }
       if (reply.kind === 'missed') {
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' }, t("{name} didn't answer in time", { name: bot.name }))
+      }
+      if (reply.kind === 'paused') {
+        return h('div', { key: `paused-${index}`, className: 'bt-event' },
+          h('span', null, t('Paused after {count} Bot relays. Waiting: {names}', { count: reply.count, names: (reply.names ?? []).join(t(' and ')) })),
+          room?.paused?.length > 0 ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => actions.continueRoom(sessionId) }, t('Continue')) : null)
       }
       if (reply.kind === 'resumed') {
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' }, t('{name} was cut off by a restart and picked its work back up', { name: bot.name }))
