@@ -233,6 +233,43 @@ test('a queued save rejects after another host takes the lock', async (t) => {
   }
 })
 
+test('a queued save cannot replace the team after import activation is reserved', async (t) => {
+  const { rt, home, statePath } = runtime(t)
+  await rt.load()
+  await rt.save()
+  const original = fs.readFileSync(statePath)
+  let entered
+  let unblock
+  const atMkdir = new Promise(resolve => { entered = resolve })
+  const gate = new Promise(resolve => { unblock = resolve })
+  let paused = false
+  const restore = patch('mkdir', originalMkdir => async (path, ...args) => {
+    if (path === home && !paused) {
+      paused = true
+      entered()
+      await gate
+    }
+    return originalMkdir(path, ...args)
+  })
+  try {
+    rt.state.prefs.marker = 'must not activate'
+    const pending = rt.save()
+    await atMkdir
+    const marker = join(home, 'import-activation.pending.json')
+    fs.writeFileSync(marker, JSON.stringify({ status: 'pending' }))
+    unblock()
+    await assert.rejects(pending, { code: 'EIMPORTRECOVERY' })
+    assert.deepEqual(fs.readFileSync(statePath), original)
+    fs.unlinkSync(marker)
+    assert.match(rt.readOnly(), /import needs recovery/u)
+    await rt.save()
+    assert.deepEqual(fs.readFileSync(statePath), original)
+  } finally {
+    unblock()
+    restore()
+  }
+})
+
 test('a read-only host resolves awaited saves without writing', async (t) => {
   const { rt, home, statePath } = runtime(t)
   await rt.load()

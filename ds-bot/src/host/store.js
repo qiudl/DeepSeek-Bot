@@ -316,6 +316,13 @@ export function install(rt) {
       try {
         await mkdir(home, { recursive: true })
         const ensureLock = () => {
+          // A save may have been queued before activation was reserved. Recheck at
+          // the write boundary as well as when save() took its snapshot.
+          if (importRecoveryRequired()) {
+            const error = new Error('ds-bot team import requires recovery')
+            error.code = 'EIMPORTRECOVERY'
+            throw error
+          }
           if (lockBroken) return
           if (!lock.owns()) {
             const error = new Error('ds-bot lost the state lock to another dsh')
