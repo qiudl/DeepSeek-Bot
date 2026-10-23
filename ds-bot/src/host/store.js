@@ -32,6 +32,18 @@ export function install(rt) {
   let stuck
   let warnedReadOnly = false
   let stopped = false
+  let activationBlocked = false
+  const activationMarker = join(home, 'import-activation.pending.json')
+  const importRecoveryRequired = () => {
+    if (activationBlocked) return true
+    try {
+      statSync(activationMarker)
+      activationBlocked = true
+    } catch (error) {
+      if (error?.code !== 'ENOENT') activationBlocked = true
+    }
+    return activationBlocked
+  }
   // mtime and size of the state.json this host last read or wrote.
   let seen = ''
   const stamp = () => {
@@ -57,6 +69,7 @@ export function install(rt) {
     }
   }
   const readOnly = () => {
+    if (importRecoveryRequired()) return 'The Bot team import needs recovery. Close this dsh, recover the import, then restart before using the team.'
     if (stuck !== undefined) return `The Bot team file ${statePath} could not be read (${stuck}). DS Bot does not change it; fix or move the file and reload.`
     if (holder === undefined) return undefined
     const where = holder.pid ? `pid ${holder.pid}${holder.host ? ` on ${holder.host}` : ''}` : 'unknown process'
@@ -220,6 +233,7 @@ export function install(rt) {
   }
 
   const load = () => loaded ??= (async () => {
+    if (importRecoveryRequired()) return
     claimLock()
     if (holder !== undefined) warn('ds-bot: %s', readOnly())
     const { migrated, stale } = adopt(await readFileState())
@@ -240,6 +254,7 @@ export function install(rt) {
   // A reading host follows the file and takes over once the other host has gone.
   const refresh = async () => {
     await load()
+    if (importRecoveryRequired()) return
     const hadHolder = holder !== undefined
     if (hadHolder) {
       claimLock()
@@ -275,6 +290,7 @@ export function install(rt) {
     return false
   }
   const writable = () => {
+    if (importRecoveryRequired()) return warnReadOnly()
     if (stuck !== undefined) return warnReadOnly()
     if (lockBroken) return true
     if (holder === undefined && lock.owns()) return true

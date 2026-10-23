@@ -137,6 +137,42 @@ function start(t, home) {
   return call
 }
 
+test('REQ-20261023-0001 keeps a team unavailable until an interrupted import is recovered and Host restarts', async (t) => {
+  const home = tempHome(t)
+  const statePath = join(home, 'state.json')
+  const marker = join(home, 'import-activation.pending.json')
+  writeFileSync(statePath, JSON.stringify(TEAM))
+  writeFileSync(marker, JSON.stringify({ version: 1, status: 'pending' }))
+  const blocked = start(t, home)
+  const view = (await blocked('state', {})).value
+  assert.deepEqual(view.bots, [])
+  assert.match(view.readOnly, /import needs recovery/u)
+  assert.equal((await blocked('set-prefs', { theme: 'dark' })).error.code, 'bot/read-only')
+  assert.equal(existsSync(join(home, 'state.lock')), false)
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).revision, TEAM.revision)
+
+  rmSync(marker)
+  assert.match((await blocked('state', {})).value.readOnly, /import needs recovery/u)
+  const restarted = start(t, home)
+  const recovered = (await restarted('state', {})).value
+  assert.deepEqual(recovered.bots.map(bot => bot.name), ['Chief'])
+  assert.equal(recovered.readOnly, null)
+})
+
+test('REQ-20261023-0001 latches an import marker noticed by an already running Host', async (t) => {
+  const home = tempHome(t)
+  const statePath = join(home, 'state.json')
+  const marker = join(home, 'import-activation.pending.json')
+  writeFileSync(statePath, JSON.stringify(TEAM))
+  const call = start(t, home)
+  assert.equal((await call('state', {})).value.readOnly, null)
+  writeFileSync(marker, '{}')
+  assert.equal((await call('set-prefs', { theme: 'dark' })).error.code, 'bot/read-only')
+  rmSync(marker)
+  assert.match((await call('state', {})).value.readOnly, /import needs recovery/u)
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).prefs?.theme, undefined)
+})
+
 test('while another dsh holds the team, the channel reads it, refuses changes, then takes over', async (t) => {
   const home = tempHome(t)
   writeFileSync(join(home, 'state.json'), JSON.stringify(TEAM))

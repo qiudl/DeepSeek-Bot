@@ -66,6 +66,10 @@ m5max 隔离 `req6148agent` Profile 后续又验证历史模式：一个带 `sys
 
 只读激活前核验 `team-import-preflight.js` 重新生成团队候选，复核源和目标状态摘要及修订号；逐一检查所有规划 Session 的私有日志为 `staged`、活动/历史模式和摘要相符，并要求调用方通过 `verifySession` 核实真实 DSH 持久化事件；重新盘点来源长期记忆并核对暂存标记及全部字节摘要。它不写团队状态，也不是激活许可：调用方尚未实现实际 Session 验证、附件验证、写入冻结或原子提交。现有 `store.save()` 在排队写文件之前即修改内存 `revision`，失败时内存可能保留未落盘的候选；正式激活不得仅将候选塞进 `rt.state` 后调用 `save()`。必须先建立排他写入屏障和可恢复的持久提交协议，并在屏障内重新运行核验。
 
+作为激活故障闸门，`store.js` 现在识别 `<bot-home>/import-activation.pending.json`：只要文件存在或读取元信息失败，Host 在本进程内锁定为只读，不加载团队状态、不接管 `state.lock`，也不保存；即使标记随后移除，本进程仍须重启才会解除锁定。已启动的 Host 若随后看见标记，同样锁定，防止继续接受写入。正式事务必须先取得目标 Host 已停止的确认和独占锁，再创建此标记，复制并复核全部未激活文件，最后原子替换团队状态；完成或回滚均须验证磁盘指纹后移除标记并重启 Host。**当前只实现故障闸门，没有实现事务写入器或恢复器，也没有在真实 Profile 创建标记。**
+
+m5max 的另一份隔离 DSH Profile 验证：在启动正式 `runProfile` 前放入标记，DS Bot 未取得 `state.lock`，关闭后 `state.json` 摘要未变；探针最终删除标记。此结果只验证标记阻止读取/保存，并不证明将来事务写入器的文件顺序或回滚正确。
+
 `team-import-agent.js` 另提供 `verifyImportedAgent`：从来源事件重新生成映射 seed，先核对阶段日志里的事件摘要，再经正式 `sessionController.resolveAgent()` 重开目标 Agent，比较持久化事件的完整 seed 前缀；允许 DSH 在其后添加生命周期事件。正式导入入口尚未提供来源事件解码器，也尚未把该校验接入激活前核验的 `verifySession` 回调。
 
 m5max 隔离冷启动探针确认：`resolveAgent()` 本身会取得 Session 写句柄，并将 Agent 注册到当前 DSH Host；之后不可再对同一 Session 调用 `agents.resume()`，否则 DSH 报 `SessionAlreadyOwnedError`。核验器不修改 DS Bot 团队状态，但 DSH 打开 Session 时可能补写生命周期事件；其“只读”仅指不激活团队、不改原团队文件，正式流程应复用已解析的 Agent 并限制打开数量。隔离旧段重启后由 `resolveAgent()` 独立打开，122 条来源事件前缀和 30 条消息均保持一致。
