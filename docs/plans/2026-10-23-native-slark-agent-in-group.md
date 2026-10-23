@@ -22,6 +22,7 @@ into the same room. Explicit @ wins the next slot; otherwise the Agent joins the
 room's ordinary rotation. Unknown acceptance is resolved by receipt lookup.
 Removing the Agent stops future delivery without rewriting room history.
 
-The bridge Source endpoint is internal preparation only. It does not make the
-Agent a room member or turn on message dispatch until the rest of the binding,
-roster, and result path is present and tested.
+The bridge Source operation is exposed to the DSH Host through the plugin's
+private `dsBotSlarkNativeRoom` service. It is not a browser `/api/bot` action.
+It does not make the Agent a room member or turn on message dispatch until the
+rest of the binding, roster, and result path is present and tested.

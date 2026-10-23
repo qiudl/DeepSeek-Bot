@@ -7,6 +7,7 @@ function fixture(enabled = true) {
   let busy = false
   let captures = 0
   let captureFailure = false
+  let nativeRoomService
   const events = []
   const room = { id: 'room-session', name: 'Team', members: ['one', 'two'] }
   const state = { workspaceId: 'workspace-1', rooms: { [room.id]: room } }
@@ -24,6 +25,10 @@ function fixture(enabled = true) {
         return { kind: 'captured', snapshot: input }
       } },
       workspaceRegistry: { get: id => id === state.workspaceId ? { id } : undefined },
+      provide(name, service) {
+        assert.equal(name, 'dsBotSlarkNativeRoom')
+        nativeRoomService = service
+      },
     },
     roomOf: id => state.rooms[id], roomBusy: () => busy,
     refresh: async () => {}, hasExclusiveWriter: () => writer,
@@ -32,22 +37,24 @@ function fixture(enabled = true) {
   install(rt)
   return { rt, room, events, get captures() { return captures },
     get creates() { return creates },
+    get nativeRoomService() { return nativeRoomService },
     setWriter(value) { writer = value }, setBusy(value) { busy = value },
     setCaptureFailure(value) { captureFailure = value } }
 }
 
 test('a native room source is a non-relayed Session event and a retry keeps its identity', async () => {
   const f = fixture()
-  const first = await f.rt.prepareNativeRoomSource('room-session')
-  const second = await f.rt.prepareNativeRoomSource('room-session')
+  const first = await f.nativeRoomService.prepare({ roomId: 'room-session' })
+  const second = await f.nativeRoomService.prepare({ roomId: 'room-session' })
   assert.deepEqual(second, first)
   assert.equal(f.captures, 1)
   assert.equal(f.events.length, 1)
   assert.equal(f.events[0].type, 'user/message')
   assert.deepEqual(f.events[0].options, { surfaceOp: 'append' })
   assert.equal(f.events[0].message.source.kind, 'slark-native-room-join')
-  assert.deepEqual(first, { workspace_id: 'workspace-1', session_id: 'bridge-session',
-    source_message_id: f.events[0].message.id, source_revision: '1' })
+  assert.deepEqual(first, { room_id: 'room-session', source: {
+    workspace_id: 'workspace-1', session_id: 'bridge-session',
+    source_message_id: f.events[0].message.id, source_revision: '1' } })
   assert.equal(f.room.nativeSource.state, 'captured')
   assert.equal(f.creates, 1)
 })

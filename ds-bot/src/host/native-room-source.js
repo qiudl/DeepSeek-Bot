@@ -57,4 +57,10 @@ export function install(rt) {
     await rt.save()
     return target
   })
+  rt.ctx.provide('dsBotSlarkNativeRoom', {
+    async prepare({ roomId } = {}) {
+      const source = await rt.prepareNativeRoomSource(roomId)
+      return source ? { room_id: roomId, source } : null
+    },
+  })
 }
