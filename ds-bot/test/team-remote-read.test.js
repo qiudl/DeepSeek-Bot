@@ -47,6 +47,28 @@ test('REQ-20261023-0001 remote team rejects selectors and broken references', ()
     { code: 'bot/invalid' })
 })
 
+test('REQ-20261023-0001 large teams advance by byte-bounded pages', () => {
+  const bots = Object.fromEntries(Array.from({ length: 100 }, (_, index) => {
+    const id = `bot_${index}`
+    return [id, { id, name: '名'.repeat(170), role: 'r'.repeat(1024) }]
+  }))
+  const large = { revision: 8, mainBotIds: [], bots, rooms: {} }
+  const seen = new Set()
+  let cursor
+  do {
+    const page = projectRemoteTeam(large, { schema_version: request.schema_version,
+      kind: 'team', limit: 100, ...(cursor ? { cursor } : {}) }, () => 0)
+    assert.ok(Buffer.byteLength(JSON.stringify(page), 'utf8') <= 60 * 1024)
+    assert.ok(page.items.length > 0)
+    for (const item of page.items) {
+      assert.equal(seen.has(item.logical_id), false)
+      seen.add(item.logical_id)
+    }
+    cursor = page.next_cursor
+  } while (cursor)
+  assert.equal(seen.size, 100)
+})
+
 test('REQ-20261023-0001 remote team service requires this Host to own the team', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-read-'))
   const ctx = fakeContext()

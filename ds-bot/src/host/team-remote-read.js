@@ -59,11 +59,24 @@ export function projectRemoteTeam(state, request, now = Date.now) {
   })
   const items = [...bots, ...rooms].sort((a, b) => a.logical_id < b.logical_id ? -1 : a.logical_id > b.logical_id ? 1 : 0)
   if (offset > items.length) throw Object.assign(new Error('Remote Bot team cursor is stale'), { code: 'bot/stale' })
-  const next = offset + limit
-  const value = { team_revision: state.revision,
-    next_cursor: next < items.length ? Buffer.from(JSON.stringify({ revision: state.revision, offset: next })).toString('base64url') : null,
-    items: items.slice(offset, next), source: 'authority', last_confirmed_at: new Date(now()).toISOString() }
-  if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESULT_BYTES) throw invalid()
+  const confirmed = new Date(now()).toISOString()
+  const page = end => ({ team_revision: state.revision,
+    next_cursor: end < items.length ? Buffer.from(JSON.stringify({ revision: state.revision, offset: end })).toString('base64url') : null,
+    items: items.slice(offset, end), source: 'authority', last_confirmed_at: confirmed })
+  const fits = value => Buffer.byteLength(JSON.stringify(value), 'utf8') <= MAX_RESULT_BYTES
+  let end = Math.min(offset + limit, items.length)
+  let value = page(end)
+  if (!fits(value)) {
+    let lower = offset, upper = end
+    while (lower + 1 < upper) {
+      const middle = Math.floor((lower + upper) / 2)
+      if (fits(page(middle))) lower = middle
+      else upper = middle
+    }
+    if (lower === offset) throw invalid()
+    end = lower
+    value = page(end)
+  }
   return value
 }
 
