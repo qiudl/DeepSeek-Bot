@@ -16,6 +16,13 @@ const botLineId = (roomId, seq) => {
   const hex = bytes.toString('hex')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
 }
+const turnId = (roomId, key) => {
+  const bytes = createHash('sha256').update(`ds-bot-native-turn/v1\0${roomId}\0${key}`).digest()
+  bytes[6] = bytes[6] & 0x0f | 0x50
+  bytes[8] = bytes[8] & 0x3f | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
 
 // A queued turn is identified by the triggering room line and the exact member
 // cycle. Replaying a group relay cannot create a second request for that line.
@@ -35,7 +42,7 @@ export function queueNativeRoomTurn(room, participant) {
   const existing = room.nativeTurnOutbox.find(turn => turn.key === key)
   if (existing) return existing
   if (room.nativeTurnOutbox.length >= 1000) return null
-  const turn = { key, groupId: member.groupId, memberId: member.memberId,
+  const turn = { key, turnId: turnId(room.id, key), groupId: member.groupId, memberId: member.memberId,
     cycle: member.cycle, triggerRoomSeq: line.seq, state: 'pending' }
   room.nativeTurnOutbox.push(turn)
   return turn
@@ -222,6 +229,31 @@ export function install(rt) {
           try { await rt.save() } catch (error) { member.readThrough = priorReadThrough; throw error }
         }
         return { state: 'ok', room_id: roomId, next_seq: nextSeq, last_seq: lastSeq, messages }
+      })
+    },
+    async roomTurns({ roomId, memberId, cycle, afterSeq = 0, limit = 3 } = {}) {
+      return serialize(async () => {
+        if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+          !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
+          !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 3) return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        const member = room?.nativeMembers?.[memberId]
+        if (!room || !room.nativeTurnBridge || !member || member.state !== 'active' ||
+          member.cycle !== cycle || member.groupId !== room.nativeGroupId ||
+          !Number.isSafeInteger(room.seq) || afterSeq > room.seq ||
+          afterSeq !== 0 && afterSeq < member.joinedRoomSeq) return { state: 'unavailable' }
+        const cursor = afterSeq === 0 ? member.joinedRoomSeq : afterSeq
+        const turns = (room.nativeTurnOutbox ?? []).filter(turn => turn.memberId === memberId &&
+          turn.cycle === cycle && turn.groupId === member.groupId &&
+          turn.triggerRoomSeq > cursor && turn.state === 'pending').slice(0, limit)
+        return { state: 'turns', room_id: roomId, group_id: member.groupId,
+          member_id: memberId, cycle,
+          next_seq: turns.at(-1)?.triggerRoomSeq ?? cursor,
+          turns: turns.map(turn => ({ turn_id: turn.turnId,
+            trigger_room_seq: turn.triggerRoomSeq })) }
       })
     },
     async acknowledgeMessages({ roomId, memberId, cycle, throughSeq } = {}) {
