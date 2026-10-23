@@ -1,4 +1,5 @@
 // Plan Session identity remapping before a selective import writes either team.
+import { createHash } from 'node:crypto'
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 
 function table(value) {
@@ -8,6 +9,14 @@ function table(value) {
 function sessionId(value) {
   if (typeof value !== 'string' || !SESSION_ID.test(value)) throw new Error('Invalid team Session reference')
   return value
+}
+
+export function teamStateDigest(state) {
+  const canonical = JSON.stringify(state, (_key, value) => table(value)
+    ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right, 'en')))
+    : value)
+  if (typeof canonical !== 'string') throw new Error('Unknown team format')
+  return createHash('sha256').update(canonical).digest('hex')
 }
 
 function teamSessions(team, { includeAgents = true } = {}) {
@@ -76,6 +85,8 @@ export function planTeamImport(source, target, allocate, { occupiedSessionIds = 
   return {
     sourceRevision: source.revision,
     targetRevision: target.revision,
+    sourceDigest: teamStateDigest(source),
+    targetDigest: teamStateDigest(target),
     sessions,
     mainBotIds: source.mainBotIds.map(id => sessions[id]),
     botIds: Object.keys(source.bots).map(id => sessions[id]),
