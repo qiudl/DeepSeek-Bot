@@ -165,6 +165,28 @@ test('native room reads fail closed on a lost or unverifiable message', async ()
     { state: 'unavailable' })
 })
 
+test('two joined Agents independently read and acknowledge the same native lines', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,
+    memberId: NEXT_MEMBER, agentId: 'agent-2', name: 'Slark Agent · Project / Other' })
+  f.room.seq = 1
+  recordNativeRoomLine(f.room, { seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'hello' })
+  for (const memberId of [MEMBER, NEXT_MEMBER]) {
+    const page = await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+      memberId, cycle: 1, afterSeq: 0 })
+    assert.deepEqual(page.messages, [{ seq: 1, source_kind: 'user',
+      message_id: 'message-1', text: 'hello' }])
+  }
+  assert.deepEqual(await f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, throughSeq: 1 }), { state: 'acknowledged', through_seq: 1 })
+  assert.deepEqual(f.room.nativeOutbox.map(line => line.seq), [1])
+  assert.deepEqual(await f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
+    memberId: NEXT_MEMBER, cycle: 1, throughSeq: 1 }), { state: 'acknowledged', through_seq: 1 })
+  assert.deepEqual(f.room.nativeOutbox, [])
+})
+
 test('a failed member save is not reported as a durable join', async () => {
   const f = fixture()
   await f.nativeRoomService.prepare({ roomId: f.room.id })
