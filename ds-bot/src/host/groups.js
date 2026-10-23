@@ -209,7 +209,13 @@ export function install(rt) {
     for (const gone of log.slice(0, -ROOM_LOG_MAX)) dropGroupLine(room.id, gone)
     room.log = log.slice(-ROOM_LOG_MAX)
   }
-  Object.assign(rt, { keepGroupLine, dropGroupLines })
+  Object.assign(rt, { keepGroupLine, dropGroupLines,
+    appendNativeAgentRoomResult(room, member, text, turnId) {
+      ensureRoomLog(room)
+      appendRoom(room, { who: member.name, botId: `slark-agent:${member.memberId}`,
+        kind: 'agent-result', text, nativeTurnId: turnId })
+      return room.seq
+    } })
 
   // A member's group Session, created on its first turn there. A new one starts with
   // a fresh look at the log and a brief of the member's own chat; the brief is the

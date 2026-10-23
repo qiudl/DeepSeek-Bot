@@ -5,6 +5,7 @@ import { nameProblem } from '../shared/mentions.js'
 
 const CONTROL_TEXT = '[Slark Agent group membership requested]'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+const DIGEST = /^[0-9a-f]{64}$/u
 const coordinate = value => typeof value === 'string' &&
   Buffer.byteLength(value, 'utf8') >= 1 && Buffer.byteLength(value, 'utf8') <= 256 &&
   !/[\x00-\x1f\x7f]/u.test(value)
@@ -129,6 +130,57 @@ export function install(rt) {
     return target
   })
   rt.ctx.provide('dsBotSlarkNativeRoom', {
+    async appendAgentResult({ roomId, groupId, memberId, cycle, turnId,
+      turnOrder, triggerRoomSeq, replyMessageId, status, resultDigest, text } = {}) {
+      return serialize(async () => {
+        if (!coordinate(roomId) || !UUID.test(groupId ?? '') ||
+          !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
+          !UUID.test(turnId ?? '') || !Number.isSafeInteger(turnOrder) || turnOrder < 1 ||
+          !Number.isSafeInteger(triggerRoomSeq) || triggerRoomSeq < 1 ||
+          !coordinate(replyMessageId) || !['completed', 'failed'].includes(status) ||
+          !DIGEST.test(resultDigest ?? '') || typeof text !== 'string' ||
+          text.length > 100_000 || typeof rt.appendNativeAgentRoomResult !== 'function')
+          return { state: 'invalid' }
+        const digest = createHash('sha256').update(JSON.stringify([
+          'dsh-native-agent-result-v1', groupId, turnId, replyMessageId, status, text,
+        ])).digest('hex')
+        if (digest !== resultDigest) return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        const member = room?.nativeMembers?.[memberId]
+        if (!room || !room.nativeTurnBridge || room.nativeGroupId !== groupId ||
+          !member || member.state !== 'active' || member.groupId !== groupId ||
+          member.cycle !== cycle) return { state: 'unavailable' }
+        const prior = room.nativeAgentResults?.[turnId]
+        if (prior) return prior.digest === digest && prior.memberId === memberId &&
+          prior.cycle === cycle && prior.turnOrder === turnOrder &&
+          prior.triggerRoomSeq === triggerRoomSeq && prior.replyMessageId === replyMessageId &&
+          prior.status === status ? { state: 'recorded', room_seq: prior.roomSeq } :
+          { state: 'conflict' }
+        const turn = (room.nativeTurnOutbox ?? []).find(item => item.turnId === turnId)
+        if (!turn || turn.state !== 'pending' || turn.groupId !== groupId ||
+          turn.memberId !== memberId || turn.cycle !== cycle ||
+          turn.order !== turnOrder || turn.triggerRoomSeq !== triggerRoomSeq)
+          return { state: 'conflict' }
+        if (Object.keys(room.nativeAgentResults ?? {}).length >= 1000)
+          return { state: 'unavailable' }
+        const before = { seq: room.seq, log: room.log, outbox: room.nativeOutbox?.slice(),
+          results: room.nativeAgentResults }
+        const roomSeq = rt.appendNativeAgentRoomResult(room, member, text, turnId)
+        room.nativeAgentResults = { ...room.nativeAgentResults, [turnId]: {
+          digest, memberId, cycle, turnOrder, triggerRoomSeq,
+          replyMessageId, status, roomSeq } }
+        try { await rt.save() } catch (error) {
+          room.seq = before.seq
+          room.log = before.log
+          room.nativeOutbox = before.outbox
+          room.nativeAgentResults = before.results
+          throw error
+        }
+        return { state: 'recorded', room_seq: roomSeq }
+      })
+    },
     async prepare({ roomId } = {}) {
       const source = await rt.prepareNativeRoomSource(roomId)
       return source ? { room_id: roomId, source } : null

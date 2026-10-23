@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { install, queueNativeRoomTurn, recordNativeRoomLine } from '../src/host/native-room-source.js'
 
 const GROUP = '11111111-1111-4111-8111-111111111111'
@@ -39,6 +39,13 @@ function fixture(enabled = true) {
       },
     },
     roomOf: id => state.rooms[id], roomBusy: () => busy,
+    appendNativeAgentRoomResult(target, member, text, turnId) {
+      target.seq += 1
+      target.log.push({ seq: target.seq, who: member.name, text,
+        botId: `slark-agent:${member.memberId}`, kind: 'agent-result', nativeTurnId: turnId })
+      recordNativeRoomLine(target, target.log.at(-1))
+      return target.seq
+    },
     refresh: async () => {}, hasExclusiveWriter: () => writer,
     createSession: async () => { creates += 1; return 'bridge-session' },
     save: async () => { if (saveFailure) throw Error('save_failed') },
@@ -228,6 +235,35 @@ test('native turns queue once for an original post and the current member cycle'
     text: '中'.repeat(6000) }]
   assert.equal(queueNativeRoomTurn(f.room, participant), null)
   assert.equal(f.room.nativeTurnOutbox.length, 0)
+})
+
+test('native Agent result is durable once, scoped to its queued turn, and never becomes new input', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
+  f.room.nativeTurnBridge = true
+  f.room.seq = 1
+  f.room.log = [{ seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'hello' }]
+  const turn = queueNativeRoomTurn(f.room, { memberId: MEMBER, cycle: 1 })
+  const text = 'Agent answer'
+  const replyMessageId = 'reply-1'
+  const resultDigest = createHash('sha256').update(JSON.stringify([
+    'dsh-native-agent-result-v1', GROUP, turn.turnId, replyMessageId, 'completed', text,
+  ])).digest('hex')
+  const input = { roomId: f.room.id, groupId: GROUP, memberId: MEMBER, cycle: 1,
+    turnId: turn.turnId, turnOrder: turn.order, triggerRoomSeq: 1,
+    replyMessageId, status: 'completed', resultDigest, text }
+  assert.deepEqual(await f.nativeRoomService.appendAgentResult(input),
+    { state: 'recorded', room_seq: 2 })
+  assert.equal(f.room.log.at(-1).kind, 'agent-result')
+  assert.equal(f.room.nativeOutbox.at(-1).kind, 'agent-result')
+  assert.deepEqual(await f.nativeRoomService.appendAgentResult(input),
+    { state: 'recorded', room_seq: 2 })
+  assert.equal(f.room.seq, 2)
+  assert.deepEqual(await f.nativeRoomService.appendAgentResult({ ...input, text: 'changed' }),
+    { state: 'invalid' })
+  assert.deepEqual(await f.nativeRoomService.appendAgentResult({ ...input,
+    turnOrder: turn.order + 1 }), { state: 'conflict' })
 })
 
 test('a failed member save is not reported as a durable join', async () => {
