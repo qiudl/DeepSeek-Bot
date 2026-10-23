@@ -45,3 +45,24 @@ export async function stageImportedAgent(ctx, { sourceId, plan, events, workspac
     throw error
   }
 }
+
+/** DSH resolveAgent owns the write handle; callers must reuse that Agent, not resume it again. */
+export async function verifyImportedAgent(ctx, { sourceId, plan, events, mode, eventDigest }) {
+  if (!['active', 'history'].includes(mode) || !/^[0-9a-f]{64}$/u.test(eventDigest ?? '') ||
+      typeof ctx?.sessionController?.resolveAgent !== 'function') throw new Error('Incomplete Agent verification')
+  const seed = remapSessionEvents(events, sourceId, plan, { active: mode === 'active' })
+  if (createHash('sha256').update(JSON.stringify(seed)).digest('hex') !== eventDigest) {
+    throw new Error('Import source events changed')
+  }
+  const targetId = plan.sessions[sourceId]
+  const resolved = await ctx.sessionController.resolveAgent(targetId)
+  if (resolved?.error || resolved?.agent?.session?.id !== targetId ||
+      typeof resolved.agent.session.snapshotEvents !== 'function') {
+    throw new Error('Staged Agent unavailable')
+  }
+  const persisted = resolved.agent.session.snapshotEvents()
+  if (!isDeepStrictEqual(persisted.slice(0, seed.length), seed)) {
+    throw new Error('Staged Agent history differs')
+  }
+  return true
+}

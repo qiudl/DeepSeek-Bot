@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { stageImportedAgent } from '../src/host/team-import-agent.js'
+import { stageImportedAgent, verifyImportedAgent } from '../src/host/team-import-agent.js'
 import { createTeamImportJournal } from '../src/host/team-import-journal.js'
 
 const sourceId = 'session-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -109,4 +110,21 @@ test('REQ-20261023-0001 keeps a completed Agent stage idempotent across restarts
     await assert.rejects(stageImportedAgent(ctx, { ...options, journal: createTeamImportJournal(root) }), /already reserved/u)
     assert.equal(calls.length, firstCalls)
   } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('REQ-20261023-0001 reopens staged history and checks its persisted seed prefix', async () => {
+  const { ctx } = fixture()
+  const eventDigest = createHash('sha256').update(JSON.stringify(events)).digest('hex')
+  const input = { sourceId, plan, events, mode: 'active', eventDigest }
+  ctx.sessionController.resolveAgent = async () => ({ agent: { session: {
+    id: targetId, snapshotEvents: () => [...events, { seq: 1, type: 'session/end-seed' }],
+  } } })
+  assert.equal(await verifyImportedAgent(ctx, input), true)
+  await assert.rejects(verifyImportedAgent(ctx, { ...input, eventDigest: '0'.repeat(64) }), /source events changed/u)
+  ctx.sessionController.resolveAgent = async () => ({ agent: { session: {
+    id: targetId, snapshotEvents: () => [{ ...events[0], data: { text: 'Changed' } }],
+  } } })
+  await assert.rejects(verifyImportedAgent(ctx, input), /history differs/u)
+  ctx.sessionController.resolveAgent = async () => ({ error: { message: 'Missing' } })
+  await assert.rejects(verifyImportedAgent(ctx, input), /unavailable/u)
 })

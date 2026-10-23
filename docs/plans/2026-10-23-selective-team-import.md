@@ -66,4 +66,8 @@ m5max 隔离 `req6148agent` Profile 后续又验证历史模式：一个带 `sys
 
 只读激活前核验 `team-import-preflight.js` 重新生成团队候选，复核源和目标状态摘要及修订号；逐一检查所有规划 Session 的私有日志为 `staged`、活动/历史模式和摘要相符，并要求调用方通过 `verifySession` 核实真实 DSH 持久化事件；重新盘点来源长期记忆并核对暂存标记及全部字节摘要。它不写团队状态，也不是激活许可：调用方尚未实现实际 Session 验证、附件验证、写入冻结或原子提交。现有 `store.save()` 在排队写文件之前即修改内存 `revision`，失败时内存可能保留未落盘的候选；正式激活不得仅将候选塞进 `rt.state` 后调用 `save()`。必须先建立排他写入屏障和可恢复的持久提交协议，并在屏障内重新运行核验。
 
+`team-import-agent.js` 另提供 `verifyImportedAgent`：从来源事件重新生成映射 seed，先核对阶段日志里的事件摘要，再经正式 `sessionController.resolveAgent()` 重开目标 Agent，比较持久化事件的完整 seed 前缀；允许 DSH 在其后添加生命周期事件。正式导入入口尚未提供来源事件解码器，也尚未把该校验接入激活前核验的 `verifySession` 回调。
+
+m5max 隔离冷启动探针确认：`resolveAgent()` 本身会取得 Session 写句柄，并将 Agent 注册到当前 DSH Host；之后不可再对同一 Session 调用 `agents.resume()`，否则 DSH 报 `SessionAlreadyOwnedError`。核验器不修改 DS Bot 团队状态，但 DSH 打开 Session 时可能补写生命周期事件；其“只读”仅指不激活团队、不改原团队文件，正式流程应复用已解析的 Agent 并限制打开数量。隔离旧段重启后由 `resolveAgent()` 独立打开，122 条来源事件前缀和 30 条消息均保持一致。
+
 暂存器还按真实路径拒绝将暂存放进来源或目标正式记忆目录，并拒绝符号链接形式的暂存上级目录。最终代码在声明版 DSH 下完整单测 891 通过、2 跳过、0 失败，lint 0 错误，生成物检查通过；固定版 DSH 的隔离 mock Web 烟测 52 步全部通过，Web 与 mock 已停止。这些验证没有写入真实 Profile。
