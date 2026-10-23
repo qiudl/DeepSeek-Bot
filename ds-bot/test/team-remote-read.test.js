@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
-import { parseRemoteTeamRead, projectRemoteTeam } from '../src/host/team-remote-read.js'
+import { parseRemoteMemoryRead, parseRemoteTeamRead, projectRemoteMemory, projectRemoteTeam } from '../src/host/team-remote-read.js'
 import { fakeContext } from './fake-ctx.js'
 
 const request = { schema_version: 'dsh-remote-bot-read/v1', kind: 'team', limit: 1 }
@@ -79,6 +79,59 @@ test('REQ-20261023-0001 remote team service requires this Host to own the team',
   await rt.save()
   const service = ctx.get('dsBotSlarkRemoteRead')
   assert.equal((await service.read({ ...request, limit: 3 })).items.length, 3)
+  assert.equal((await service.read({ schema_version: request.schema_version,
+    kind: 'memory', logical_id: 'bot:thanos' })).item, null)
   writeFileSync(join(home, 'import-activation.pending.json'), '{}')
   await assert.rejects(service.read(request), { code: 'bot/read-only' })
+  await assert.rejects(service.read({ schema_version: request.schema_version,
+    kind: 'memory', logical_id: 'bot:thanos' }), { code: 'bot/read-only' })
+})
+
+test('REQ-20261023-0001 memory pages carry complete bytes and reject a changed scope', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-memory-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const dir = join(home, 'memory', 'bots', 'thanos')
+  mkdirSync(dir, { recursive: true })
+  const original = Buffer.from('灭霸'.repeat(20_000))
+  writeFileSync(join(dir, 'MEMORY.md'), original)
+  writeFileSync(join(dir, 'facts.md'), 'some facts')
+  const target = { schema_version: request.schema_version, kind: 'memory', logical_id: 'bot:thanos' }
+  const collected = new Map()
+  let cursor
+  let first
+  do {
+    const page = await projectRemoteMemory(state, home, { ...target, ...(cursor ? { cursor } : {}) }, () => 0)
+    first ??= page
+    assert.ok(Buffer.byteLength(JSON.stringify(page), 'utf8') <= 60 * 1024)
+    assert.equal(page.logical_id, 'bot:thanos')
+    assert.equal(page.source, 'authority')
+    assert.equal(page.last_confirmed_at, '1970-01-01T00:00:00.000Z')
+    const item = page.item
+    const prior = collected.get(item.file) ?? []
+    assert.equal(item.offset, Buffer.concat(prior).length)
+    prior.push(Buffer.from(item.content_base64, 'base64'))
+    collected.set(item.file, prior)
+    cursor = page.next_cursor
+  } while (cursor)
+  assert.deepEqual(Buffer.concat(collected.get('MEMORY.md')), original)
+  assert.equal(Buffer.concat(collected.get('facts.md')).toString(), 'some facts')
+  writeFileSync(join(dir, 'facts.md'), 'changed')
+  await assert.rejects(projectRemoteMemory(state, home, { ...target, cursor: first.next_cursor }), { code: 'bot/stale' })
+})
+
+test('REQ-20261023-0001 memory read rejects selectors, unknown scopes and symbolic links', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-memory-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  for (const value of [{ ...request, kind: 'memory' },
+    { schema_version: request.schema_version, kind: 'memory', logical_id: 'bot:thanos', profile_id: 'other' },
+    { schema_version: request.schema_version, kind: 'memory', logical_id: 'bot:../secret' }]) {
+    assert.throws(() => parseRemoteMemoryRead(value), { code: 'bot/invalid' })
+  }
+  const target = { schema_version: request.schema_version, kind: 'memory', logical_id: 'bot:thanos' }
+  await assert.rejects(projectRemoteMemory(state, home, { ...target, logical_id: 'bot:missing' }), { code: 'bot/invalid' })
+  assert.equal((await projectRemoteMemory(state, home, target)).item, null)
+  const dir = join(home, 'memory', 'bots', 'thanos')
+  mkdirSync(dir, { recursive: true })
+  symlinkSync(join(home, 'outside.md'), join(dir, 'MEMORY.md'))
+  await assert.rejects(projectRemoteMemory(state, home, target), { code: 'bot/invalid' })
 })
