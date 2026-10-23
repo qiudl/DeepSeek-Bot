@@ -396,7 +396,7 @@ export function install(rt) {
     const before = round.slots.length
     const members = room.members.map(rt.botOf).filter(Boolean)
     for (const line of lines) {
-      appendRoom(room, { who: 'User', text: line.text })
+      appendRoom(room, { who: 'User', text: line.text, sourceKind: 'user', sourceMessageId: line.id })
       round.replies.push({ kind: 'user', text: line.text, time: Date.now() })
       const { all, found } = mentionsIn(line.text, members)
       const note = all || found.length > 0 ? 'the user mentioned you' : 'new message from the user'
@@ -516,6 +516,8 @@ export function install(rt) {
         appendRoom(room, {
           ...(post.botId ? { who: rt.botOf(post.botId)?.name ?? post.name ?? 'Bot', botId: post.botId } : { who: 'User' }),
           text,
+          ...(post.sourceKind ? { sourceKind: post.sourceKind } : {}),
+          ...(post.sourceMessageId ? { sourceMessageId: post.sourceMessageId } : {}),
           ...(post.files === undefined ? {} : { files: post.files }),
         })
       }

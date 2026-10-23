@@ -397,6 +397,14 @@ test('the late round limit makes a late post quiet', async (t) => {
 // anyone could see it. It is written into the log and the running round at once,
 // and the relay it still opens shows it again nowhere.
 const logLines = host => JSON.parse(readFileSync(join(host.home, 'state.json'), 'utf8')).rooms.r1.log
+
+test('native group keeps the DSH source message ID for a real user line', async (t) => {
+  const host = await start(t)
+  host.round('source-line', { ...host.say('Please review this'), id: 'user-message-1' })
+  await settle(() => logLines(host).length > 0)
+  assert.equal(logLines(host)[0].sourceMessageId, 'user-message-1')
+  assert.equal(logLines(host)[0].sourceKind, 'user')
+})
 const busyRound = async (t, room, services) => {
   const host = await start(t, room, services)
   const first = host.round('c1', host.say('@Writer 整理文档'))
