@@ -41,8 +41,8 @@ function fixture(enabled = true) {
     roomOf: id => state.rooms[id], roomBusy: () => busy,
     appendNativeAgentRoomResult(target, member, text, turnId) {
       target.seq += 1
-      target.log.push({ seq: target.seq, who: member.name, text,
-        botId: `slark-agent:${member.memberId}`, kind: 'agent-result', nativeTurnId: turnId })
+      target.log = [...target.log, { seq: target.seq, who: member.name, text,
+        botId: `slark-agent:${member.memberId}`, kind: 'agent-result', nativeTurnId: turnId }]
       recordNativeRoomLine(target, target.log.at(-1))
       return target.seq
     },
@@ -253,6 +253,12 @@ test('native Agent result is durable once, scoped to its queued turn, and never 
   const input = { roomId: f.room.id, groupId: GROUP, memberId: MEMBER, cycle: 1,
     turnId: turn.turnId, turnOrder: turn.order, triggerRoomSeq: 1,
     replyMessageId, status: 'completed', resultDigest, text }
+  f.setSaveFailure(true)
+  await assert.rejects(f.nativeRoomService.appendAgentResult(input), /save_failed/)
+  assert.equal(f.room.seq, 1)
+  assert.equal(f.room.nativeAgentResults, undefined)
+  assert.equal(f.room.nativeOutbox?.length ?? 0, 0)
+  f.setSaveFailure(false)
   assert.deepEqual(await f.nativeRoomService.appendAgentResult(input),
     { state: 'recorded', room_seq: 2 })
   assert.equal(f.room.log.at(-1).kind, 'agent-result')
