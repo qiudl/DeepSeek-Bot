@@ -124,14 +124,20 @@ test('native room reads preserve original user message IDs and advance across Bo
   assert.deepEqual(f.room.nativeOutbox.map(line => line.seq), [3, 4])
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
     memberId: MEMBER, cycle: 1, afterSeq: 0 }),
-    { state: 'already_acknowledged', through_seq: 2 })
+    { state: 'ok', room_id: f.room.id, next_seq: 4, last_seq: 4,
+      messages: [{ seq: 3, source_kind: 'user', message_id: 'message-3', text: '@Agent help' },
+        { seq: 4, source_kind: 'bot', message_id: '4568b790-e70a-5569-a313-ec0a20cc6803',
+          bot_id: 'two', text: 'reply' }] })
   assert.deepEqual(await f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
     memberId: MEMBER, cycle: 1, throughSeq: 1 }), { state: 'acknowledged', through_seq: 2 })
   assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,
     memberId: NEXT_MEMBER, agentId: 'agent-2', name: 'Slark Agent · Project / Other' }),
     { state: 'joined', joined_room_seq: 4 })
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
-    memberId: NEXT_MEMBER, cycle: 1, afterSeq: 0, limit: 2 }), { state: 'history_forbidden' })
+    memberId: NEXT_MEMBER, cycle: 1, afterSeq: 0, limit: 2 }),
+  { state: 'ok', room_id: f.room.id, next_seq: 4, last_seq: 4, messages: [] })
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: NEXT_MEMBER, cycle: 1, afterSeq: 1, limit: 2 }), { state: 'history_forbidden' })
 })
 
 test('native room reads fail closed on a lost or unverifiable message', async () => {
@@ -183,7 +189,8 @@ test('leaving stops reads and a new cycle begins after the old room sequence', a
   assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,
     memberId: NEXT_MEMBER, cycle: 2 }), { state: 'joined', joined_room_seq: 1 })
   assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: NEXT_MEMBER,
-    cycle: 2, afterSeq: 0 }), { state: 'history_forbidden' })
+    cycle: 2, afterSeq: 0 }),
+  { state: 'ok', room_id: f.room.id, next_seq: 1, last_seq: 1, messages: [] })
 })
 
 test('an unsuccessful acknowledgement keeps the message available for retry', async () => {

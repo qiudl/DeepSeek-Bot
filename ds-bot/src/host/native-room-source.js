@@ -156,19 +156,22 @@ export function install(rt) {
         if (!room || !member || member.state !== 'active' || member.cycle !== cycle ||
           room.nativeSource?.state !== 'captured' || room.nativeGroupId !== member.groupId)
           return { state: 'unavailable' }
-        if (afterSeq < member.joinedRoomSeq) return { state: 'history_forbidden' }
-        if (afterSeq < member.ackSeq)
+        // Zero is a private recovery cursor: resume at the durable ack after a
+        // Daemon restart, never at the room's pre-join history.
+        const cursor = afterSeq === 0 ? member.ackSeq : afterSeq
+        if (cursor < member.joinedRoomSeq) return { state: 'history_forbidden' }
+        if (cursor < member.ackSeq)
           return { state: 'already_acknowledged', through_seq: member.ackSeq }
         const lastSeq = room.seq
         const log = room.nativeOutbox
-        if (!Number.isSafeInteger(lastSeq) || lastSeq < 0 || afterSeq > lastSeq ||
-          !Array.isArray(log) || (afterSeq < lastSeq && log.at(-1)?.seq !== lastSeq))
+        if (!Number.isSafeInteger(lastSeq) || lastSeq < 0 || cursor > lastSeq ||
+          !Array.isArray(log) || (cursor < lastSeq && log.at(-1)?.seq !== lastSeq))
           return { state: 'unavailable' }
-        if (afterSeq < lastSeq && (log.length === 0 || log[0]?.seq > afterSeq + 1))
+        if (cursor < lastSeq && (log.length === 0 || log[0]?.seq > cursor + 1))
           return { state: 'history_gap' }
-        const lines = log.filter(line => line.seq > afterSeq).slice(0, limit)
+        const lines = log.filter(line => line.seq > cursor).slice(0, limit)
         const messages = []
-        let nextSeq = afterSeq
+        let nextSeq = cursor
         for (const line of lines) {
           if (line.seq !== nextSeq + 1) return { state: 'history_gap' }
           nextSeq = line.seq
