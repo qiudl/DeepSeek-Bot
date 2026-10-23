@@ -26,7 +26,10 @@ function fixture({ failAt } = {}) {
     agentPresets: { list: async () => [{ id: 'standard' }], mount: async (_scope, preset) => { calls.push(`preset:${preset}`) } },
     agents: { create: async input => { calls.push(`create:${input.sessionId}`); await input.setup({}); return { agent: { session } } } },
     sessionTitle: { rename: async (_session, title) => { calls.push(`title:${title}`) } },
-    sessionController: { selectModel: async input => { calls.push(`model:${input.provider}/${input.model}`) } },
+    sessionController: { selectModel: async input => {
+      calls.push(`model:${input.provider}/${input.model}`)
+      if (failAt === 'model') throw new Error('model unavailable')
+    } },
     sessions: { flush: async value => { assert.equal(value, session); calls.push('flush') } },
   }
   return { ctx, workspace, journal, calls }
@@ -81,6 +84,14 @@ test('REQ-20261023-0001 records a failed partial stage for explicit recovery', a
   await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: 'Bot',
     model: { provider: 'mock', model: 'mock' }, journal }), /attach failed/u)
   assert.deepEqual(calls.slice(-2), [`attach:${targetId}`, `fail:${targetId}`])
+  assert.equal(calls.some(call => call.startsWith('complete:')), false)
+})
+
+test('REQ-20261023-0001 unavailable target model leaves an Agent stage for review', async () => {
+  const { ctx, workspace, journal, calls } = fixture({ failAt: 'model' })
+  await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: 'Bot',
+    model: { provider: 'mock', model: 'mock' }, journal }), /model unavailable/u)
+  assert.deepEqual(calls.slice(-2), ['model:mock/mock', `fail:${targetId}`])
   assert.equal(calls.some(call => call.startsWith('complete:')), false)
 })
 
