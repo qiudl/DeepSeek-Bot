@@ -1,7 +1,36 @@
 // Keep Slark's fenced Source Session separate from the writable native room Session.
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createHash } from 'node:crypto'
+import { nameProblem } from '../shared/mentions.js'
 
 const CONTROL_TEXT = '[Slark Agent group membership requested]'
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
+const coordinate = value => typeof value === 'string' &&
+  Buffer.byteLength(value, 'utf8') >= 1 && Buffer.byteLength(value, 'utf8') <= 256 &&
+  !/[\x00-\x1f\x7f]/u.test(value)
+const botLineId = (roomId, seq) => {
+  const bytes = createHash('sha256').update(`ds-bot-native-line/v1\0${roomId}\0${seq}`).digest()
+  bytes[6] = bytes[6] & 0x0f | 0x50
+  bytes[8] = bytes[8] & 0x3f | 0x80
+  const hex = bytes.toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
+
+// The outbox lives in the same state.json write as the room log. Keep every room
+// sequence, including lines that are not user instructions, so a cursor cannot
+// silently skip a missing message when the visible 60-line log rolls over.
+export function recordNativeRoomLine(room, line) {
+  if (!Object.values(room.nativeMembers ?? {}).some(member => member.state === 'active')) return
+  room.nativeOutbox ??= []
+  const text = typeof line.text === 'string' ? line.text : ''
+  room.nativeOutbox.push({ seq: line.seq,
+    ...(line.sourceKind ? { sourceKind: line.sourceKind } : {}),
+    ...(line.sourceMessageId ? { sourceMessageId: line.sourceMessageId } : {}),
+    ...(line.botId ? { botId: line.botId } : {}),
+    ...(line.kind ? { kind: line.kind } : {}),
+    ...(text.length <= 16_000 ? { text } : { text: '', length: text.length }),
+  })
+}
 
 export function install(rt) {
   if (rt.config.slarkExternalGroup !== true) return
@@ -10,6 +39,11 @@ export function install(rt) {
     const next = pending.then(action)
     pending = next.catch(() => {})
     return next
+  }
+  const compact = room => {
+    const active = Object.values(room.nativeMembers ?? {}).filter(member => member.state === 'active')
+    const through = active.length === 0 ? room.seq : Math.min(...active.map(member => member.ackSeq))
+    room.nativeOutbox = (room.nativeOutbox ?? []).filter(line => line.seq > through)
   }
 
   rt.prepareNativeRoomSource = roomId => serialize(async () => {
@@ -62,38 +96,158 @@ export function install(rt) {
       const source = await rt.prepareNativeRoomSource(roomId)
       return source ? { room_id: roomId, source } : null
     },
-    async userMessages({ roomId, afterSeq = 0, limit = 50 } = {}) {
-      if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
-        !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
-        !Number.isSafeInteger(limit) || limit < 1 || limit > 50) return { state: 'invalid' }
-      await rt.refresh()
-      if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
-      const room = rt.roomOf(roomId)
-      if (!room || room.nativeSource?.state !== 'captured' ||
-        room.nativeSource.roomId !== roomId ||
-        room.nativeSource.workspaceId !== rt.state.workspaceId) return { state: 'unavailable' }
-      const lastSeq = room.seq ?? 0
-      const log = room.log ?? []
-      if (!Number.isSafeInteger(lastSeq) || lastSeq < 0 || afterSeq > lastSeq ||
-        !Array.isArray(log) || (lastSeq > 0 && log.at(-1)?.seq !== lastSeq))
-        return { state: 'unavailable' }
-      if (afterSeq < lastSeq && (log.length === 0 || log[0]?.seq > afterSeq + 1))
-        return { state: 'history_gap' }
-      const lines = log.filter(line => line.seq > afterSeq).slice(0, limit)
-      const messages = []
-      let nextSeq = afterSeq
-      for (const line of lines) {
-        if (line.seq !== nextSeq + 1) return { state: 'history_gap' }
-        nextSeq = line.seq
-        if (line.sourceKind !== 'user') continue
-        if (line.botId !== undefined || typeof line.sourceMessageId !== 'string' ||
-          line.sourceMessageId.length === 0 || line.sourceMessageId.length > 256 ||
-          typeof line.text !== 'string' || line.text.length === 0 ||
-          line.text.length > 16_000 || line.length !== undefined)
-          return { state: 'unverifiable_message', seq: line.seq }
-        messages.push({ seq: line.seq, message_id: line.sourceMessageId, text: line.text })
-      }
-      return { state: 'ok', room_id: roomId, next_seq: nextSeq, last_seq: lastSeq, messages }
+    async joinAgent({ roomId, groupId, memberId, cycle, projectId, agentId, name } = {}) {
+      return serialize(async () => {
+        if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+          !UUID.test(groupId ?? '') || !UUID.test(memberId ?? '') ||
+          !Number.isSafeInteger(cycle) || cycle < 1 || !coordinate(projectId) ||
+          !coordinate(agentId) || !coordinate(name) || nameProblem(name) !== undefined)
+          return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        if (!room || room.nativeSource?.state !== 'captured' ||
+          room.nativeSource.roomId !== roomId ||
+          room.nativeSource.workspaceId !== rt.state.workspaceId || rt.roomBusy(roomId))
+          return { state: 'unavailable' }
+        if (room.nativeGroupId && room.nativeGroupId !== groupId) return { state: 'conflict' }
+        const existing = room.nativeMembers?.[memberId]
+        if (existing) return existing.groupId === groupId && existing.cycle === cycle &&
+          existing.projectId === projectId && existing.agentId === agentId &&
+          existing.name === name && existing.state === 'active'
+          ? { state: 'joined', joined_room_seq: existing.joinedRoomSeq } : { state: 'conflict' }
+        if (Object.values(room.nativeMembers ?? {}).some(member => member.state === 'active' &&
+          member.projectId === projectId && member.agentId === agentId)) return { state: 'conflict' }
+        if (!Number.isSafeInteger(room.seq)) {
+          room.log = (room.log ?? []).map((line, index) => ({ ...line, seq: index + 1 }))
+          room.seq = room.log.length
+          room.seen ??= {}
+        }
+        const priorGroupId = room.nativeGroupId
+        const priorMembers = room.nativeMembers
+        room.nativeGroupId = groupId
+        room.nativeMembers = { ...(priorMembers ?? {}) }
+        room.nativeOutbox ??= []
+        room.nativeMembers[memberId] = { groupId, memberId, cycle, projectId, agentId, name,
+          state: 'active', joinedRoomSeq: room.seq, readThrough: room.seq, ackSeq: room.seq }
+        compact(room)
+        try { await rt.save() } catch (error) {
+          if (priorGroupId === undefined) delete room.nativeGroupId
+          else room.nativeGroupId = priorGroupId
+          if (priorMembers === undefined) delete room.nativeMembers
+          else room.nativeMembers = priorMembers
+          throw error
+        }
+        return { state: 'joined', joined_room_seq: room.seq }
+      })
+    },
+    async roomMessages({ roomId, memberId, cycle, afterSeq = 0, limit = 50 } = {}) {
+      return serialize(async () => {
+        if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+          !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
+          !Number.isSafeInteger(afterSeq) || afterSeq < 0 ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 50) return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        const member = room?.nativeMembers?.[memberId]
+        if (!room || !member || member.state !== 'active' || member.cycle !== cycle ||
+          room.nativeSource?.state !== 'captured' || room.nativeGroupId !== member.groupId)
+          return { state: 'unavailable' }
+        if (afterSeq < member.joinedRoomSeq) return { state: 'history_forbidden' }
+        if (afterSeq < member.ackSeq)
+          return { state: 'already_acknowledged', through_seq: member.ackSeq }
+        const lastSeq = room.seq
+        const log = room.nativeOutbox
+        if (!Number.isSafeInteger(lastSeq) || lastSeq < 0 || afterSeq > lastSeq ||
+          !Array.isArray(log) || (afterSeq < lastSeq && log.at(-1)?.seq !== lastSeq))
+          return { state: 'unavailable' }
+        if (afterSeq < lastSeq && (log.length === 0 || log[0]?.seq > afterSeq + 1))
+          return { state: 'history_gap' }
+        const lines = log.filter(line => line.seq > afterSeq).slice(0, limit)
+        const messages = []
+        let nextSeq = afterSeq
+        for (const line of lines) {
+          if (line.seq !== nextSeq + 1) return { state: 'history_gap' }
+          nextSeq = line.seq
+          if (line.sourceKind === 'user') {
+            if (line.botId !== undefined || typeof line.sourceMessageId !== 'string' ||
+              line.sourceMessageId.length === 0 || line.sourceMessageId.length > 256 ||
+              typeof line.text !== 'string' || line.text.length === 0 ||
+              line.text.length > 16_000 || line.length !== undefined)
+              return { state: 'unverifiable_message', seq: line.seq }
+            messages.push({ seq: line.seq, source_kind: 'user',
+              message_id: line.sourceMessageId, text: line.text })
+          } else if (line.botId !== undefined && line.kind === undefined) {
+            if (typeof line.botId !== 'string' || line.botId.length === 0 ||
+              typeof line.text !== 'string' || line.text.length === 0 ||
+              line.text.length > 16_000 || line.length !== undefined)
+              return { state: 'unverifiable_message', seq: line.seq }
+            messages.push({ seq: line.seq, source_kind: 'bot',
+              message_id: botLineId(roomId, line.seq), bot_id: line.botId, text: line.text })
+          }
+        }
+        if (nextSeq > member.readThrough) {
+          const priorReadThrough = member.readThrough
+          member.readThrough = nextSeq
+          try { await rt.save() } catch (error) { member.readThrough = priorReadThrough; throw error }
+        }
+        return { state: 'ok', room_id: roomId, next_seq: nextSeq, last_seq: lastSeq, messages }
+      })
+    },
+    async acknowledgeMessages({ roomId, memberId, cycle, throughSeq } = {}) {
+      return serialize(async () => {
+        if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+          !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1 ||
+          !Number.isSafeInteger(throughSeq) || throughSeq < 0) return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        const member = room?.nativeMembers?.[memberId]
+        if (!member || member.cycle !== cycle || member.state !== 'active') return { state: 'unavailable' }
+        if (throughSeq > member.readThrough)
+          return { state: 'conflict' }
+        if (throughSeq <= member.ackSeq)
+          return { state: 'acknowledged', through_seq: member.ackSeq }
+        if (throughSeq > member.ackSeq) {
+          const priorOutbox = room.nativeOutbox
+          const priorAck = member.ackSeq
+          member.ackSeq = throughSeq
+          compact(room)
+          try { await rt.save() } catch (error) {
+            member.ackSeq = priorAck
+            room.nativeOutbox = [...priorOutbox, ...room.nativeOutbox.filter(line =>
+              line.seq > (priorOutbox.at(-1)?.seq ?? 0))]
+            throw error
+          }
+        }
+        return { state: 'acknowledged', through_seq: throughSeq }
+      })
+    },
+    async leaveAgent({ roomId, memberId, cycle } = {}) {
+      return serialize(async () => {
+        if (typeof roomId !== 'string' || roomId.length === 0 || roomId.length > 256 ||
+          !UUID.test(memberId ?? '') || !Number.isSafeInteger(cycle) || cycle < 1)
+          return { state: 'invalid' }
+        await rt.refresh()
+        if (!rt.hasExclusiveWriter()) return { state: 'unavailable' }
+        const room = rt.roomOf(roomId)
+        const member = room?.nativeMembers?.[memberId]
+        if (!member || member.cycle !== cycle) return { state: 'unavailable' }
+        if (member.state === 'left') return { state: 'left', left_room_seq: member.leftRoomSeq }
+        if (member.state !== 'active') return { state: 'conflict' }
+        const priorOutbox = room.nativeOutbox
+        room.nativeMembers = { ...room.nativeMembers,
+          [memberId]: { ...member, state: 'left', leftRoomSeq: room.seq } }
+        compact(room)
+        try { await rt.save() } catch (error) {
+          room.nativeMembers = { ...room.nativeMembers, [memberId]: member }
+          room.nativeOutbox = [...priorOutbox, ...room.nativeOutbox.filter(line =>
+            line.seq > (priorOutbox.at(-1)?.seq ?? 0))]
+          throw error
+        }
+        return { state: 'left', left_room_seq: room.seq }
+      })
     },
   })
 }

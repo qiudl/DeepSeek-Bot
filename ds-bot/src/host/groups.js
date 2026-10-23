@@ -25,6 +25,7 @@ import { escapeRegExp, headOf, splitRef, textOf } from './text.js'
 import { mentionSpans, speakerOf } from '../shared/mentions.js'
 import { GROUP_REF, output } from './tools.js'
 import { failureLine } from './turns.js'
+import { recordNativeRoomLine } from './native-room-source.js'
 
 const ROOM_LOG_MAX = 60
 const ROOM_FIRST_LOOK = 12
@@ -190,7 +191,9 @@ export function install(rt) {
 
   const appendRoom = (room, line) => {
     room.seq += 1
-    const log = [...room.log, keepGroupLine(room.id, { ...line, seq: room.seq }, line.text ?? '')]
+    const numbered = { ...line, seq: room.seq }
+    recordNativeRoomLine(room, numbered)
+    const log = [...room.log, keepGroupLine(room.id, numbered, line.text ?? '')]
     for (const gone of log.slice(0, -ROOM_LOG_MAX)) dropGroupLine(room.id, gone)
     room.log = log.slice(-ROOM_LOG_MAX)
   }

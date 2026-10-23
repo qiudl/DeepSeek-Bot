@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { install } from '../src/host/native-room-source.js'
+import { install, recordNativeRoomLine } from '../src/host/native-room-source.js'
+
+const GROUP = '11111111-1111-4111-8111-111111111111'
+const MEMBER = '22222222-2222-4222-8222-222222222222'
+const NEXT_MEMBER = '33333333-3333-4333-8333-333333333333'
+const agent = { groupId: GROUP, memberId: MEMBER, cycle: 1,
+  projectId: 'project-1', agentId: 'agent-1', name: 'Slark Agent · Project / Helper' }
 
 function fixture(enabled = true) {
   let writer = true
   let busy = false
   let captures = 0
   let captureFailure = false
+  let saveFailure = false
   let nativeRoomService
   const events = []
   const room = { id: 'room-session', name: 'Team', members: ['one', 'two'] }
@@ -32,14 +39,15 @@ function fixture(enabled = true) {
     },
     roomOf: id => state.rooms[id], roomBusy: () => busy,
     refresh: async () => {}, hasExclusiveWriter: () => writer,
-    createSession: async () => { creates += 1; return 'bridge-session' }, save: async () => {},
+    createSession: async () => { creates += 1; return 'bridge-session' },
+    save: async () => { if (saveFailure) throw Error('save_failed') },
   }
   install(rt)
   return { rt, room, events, get captures() { return captures },
     get creates() { return creates },
     get nativeRoomService() { return nativeRoomService },
     setWriter(value) { writer = value }, setBusy(value) { busy = value },
-    setCaptureFailure(value) { captureFailure = value } }
+    setCaptureFailure(value) { captureFailure = value }, setSaveFailure(value) { saveFailure = value } }
 }
 
 test('a native room source is a non-relayed Session event and a retry keeps its identity', async () => {
@@ -89,39 +97,109 @@ test('a missing room, busy room or non-writer cannot create a Source', async () 
 test('native room reads preserve original user message IDs and advance across Bot lines', async () => {
   const f = fixture()
   await f.nativeRoomService.prepare({ roomId: f.room.id })
-  f.room.seq = 4
-  f.room.log = [
+  assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent }),
+    { state: 'joined', joined_room_seq: 0 })
+  const lines = [
     { seq: 1, who: 'User', sourceKind: 'user', sourceMessageId: 'message-1', text: 'first' },
     { seq: 2, who: 'Bot', botId: 'one', text: 'reply' },
     { seq: 3, who: 'User', sourceKind: 'user', sourceMessageId: 'message-3', text: '@Agent help' },
     { seq: 4, who: 'Bot', botId: 'two', text: 'reply' },
   ]
-  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 2 }), {
+  for (const line of lines) { f.room.seq = line.seq; recordNativeRoomLine(f.room, line) }
+  f.room.log = lines.slice(-2)
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: MEMBER,
+    cycle: 1, afterSeq: 0, limit: 2 }), {
     state: 'ok', room_id: f.room.id, next_seq: 2, last_seq: 4,
-    messages: [{ seq: 1, message_id: 'message-1', text: 'first' }],
+    messages: [{ seq: 1, source_kind: 'user', message_id: 'message-1', text: 'first' },
+      { seq: 2, source_kind: 'bot', message_id: '0a846508-670f-59a5-a393-9ddedb4bf3b0', bot_id: 'one', text: 'reply' }],
   })
-  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 2, limit: 2 }), {
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: MEMBER,
+    cycle: 1, afterSeq: 2, limit: 2 }), {
     state: 'ok', room_id: f.room.id, next_seq: 4, last_seq: 4,
-    messages: [{ seq: 3, message_id: 'message-3', text: '@Agent help' }],
+    messages: [{ seq: 3, source_kind: 'user', message_id: 'message-3', text: '@Agent help' },
+      { seq: 4, source_kind: 'bot', message_id: '4568b790-e70a-5569-a313-ec0a20cc6803', bot_id: 'two', text: 'reply' }],
   })
+  assert.deepEqual(await f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, throughSeq: 2 }), { state: 'acknowledged', through_seq: 2 })
+  assert.deepEqual(f.room.nativeOutbox.map(line => line.seq), [3, 4])
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0 }),
+    { state: 'already_acknowledged', through_seq: 2 })
+  assert.deepEqual(await f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, throughSeq: 1 }), { state: 'acknowledged', through_seq: 2 })
+  assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,
+    memberId: NEXT_MEMBER, agentId: 'agent-2', name: 'Slark Agent · Project / Other' }),
+    { state: 'joined', joined_room_seq: 4 })
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: NEXT_MEMBER, cycle: 1, afterSeq: 0, limit: 2 }), { state: 'history_forbidden' })
 })
 
 test('native room reads fail closed on a lost or unverifiable message', async () => {
   const f = fixture()
   await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
   f.room.seq = 3
-  f.room.log = [{ seq: 2, who: 'User', sourceKind: 'user', sourceMessageId: 'message-2', text: 'later' },
+  f.room.nativeOutbox = [{ seq: 2, who: 'User', sourceKind: 'user', sourceMessageId: 'message-2', text: 'later' },
     { seq: 3, who: 'Bot', botId: 'one', text: 'reply' }]
-  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
     { state: 'history_gap' })
-  f.room.log.unshift({ seq: 1, who: 'User', sourceKind: 'user', text: 'legacy' })
-  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+  f.room.nativeOutbox.unshift({ seq: 1, who: 'User', sourceKind: 'user', text: 'legacy' })
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
     { state: 'unverifiable_message', seq: 1 })
-  f.room.log[0].sourceMessageId = 'message-1'
-  f.room.log[0].length = 50_000
-  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+  f.room.nativeOutbox[0].sourceMessageId = 'message-1'
+  f.room.nativeOutbox[0].length = 50_000
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
     { state: 'unverifiable_message', seq: 1 })
   f.setWriter(false)
-  assert.deepEqual(await f.nativeRoomService.userMessages({ roomId: f.room.id, afterSeq: 0, limit: 10 }),
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0, limit: 10 }),
     { state: 'unavailable' })
+})
+
+test('a failed member save is not reported as a durable join', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  f.setSaveFailure(true)
+  await assert.rejects(f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent }), /save_failed/)
+  assert.equal(f.room.nativeMembers?.[MEMBER], undefined)
+  f.setSaveFailure(false)
+  assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent }),
+    { state: 'joined', joined_room_seq: 0 })
+})
+
+test('leaving stops reads and a new cycle begins after the old room sequence', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
+  f.room.seq = 1
+  recordNativeRoomLine(f.room, { seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'old' })
+  assert.deepEqual(await f.nativeRoomService.leaveAgent({ roomId: f.room.id, memberId: MEMBER, cycle: 1 }),
+    { state: 'left', left_room_seq: 1 })
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: MEMBER,
+    cycle: 1, afterSeq: 0 }), { state: 'unavailable' })
+  assert.deepEqual(await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent,
+    memberId: NEXT_MEMBER, cycle: 2 }), { state: 'joined', joined_room_seq: 1 })
+  assert.deepEqual(await f.nativeRoomService.roomMessages({ roomId: f.room.id, memberId: NEXT_MEMBER,
+    cycle: 2, afterSeq: 0 }), { state: 'history_forbidden' })
+})
+
+test('an unsuccessful acknowledgement keeps the message available for retry', async () => {
+  const f = fixture()
+  await f.nativeRoomService.prepare({ roomId: f.room.id })
+  await f.nativeRoomService.joinAgent({ roomId: f.room.id, ...agent })
+  f.room.seq = 1
+  recordNativeRoomLine(f.room, { seq: 1, sourceKind: 'user', sourceMessageId: 'message-1', text: 'retry me' })
+  assert.equal((await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0 })).next_seq, 1)
+  f.setSaveFailure(true)
+  await assert.rejects(f.nativeRoomService.acknowledgeMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, throughSeq: 1 }), /save_failed/)
+  assert.equal(f.room.nativeMembers[MEMBER].ackSeq, 0)
+  assert.deepEqual(f.room.nativeOutbox.map(line => line.seq), [1])
+  f.setSaveFailure(false)
+  assert.equal((await f.nativeRoomService.roomMessages({ roomId: f.room.id,
+    memberId: MEMBER, cycle: 1, afterSeq: 0 })).messages[0].text, 'retry me')
 })
