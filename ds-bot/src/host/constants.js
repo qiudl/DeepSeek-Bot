@@ -23,7 +23,7 @@ export const ROUTE = '/api/bot'
 export const MAX_EXCHANGES = 600
 // state.json is written whole on every save, so a long message between Bots or a long
 // group line keeps only its start there. The rest stays where it already is (a message
-// in the Session it was delivered to) or in a file of its own (a group line).
+// in the Session it was delivered to) or the group history journal (a group line).
 export const TEXT_KEPT = 2000
 // Of one group line, a member reads this much: in its prompt, and with read_group_chat.
 export const GROUP_LINE_READ = 20_000

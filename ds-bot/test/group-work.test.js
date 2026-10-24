@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import { apply } from '../index.js'
 import { fakeAttachments, fakeContext } from './fake-ctx.js'
 import { MESSAGE_INLINE_MAX, ROOM_STEP_GAP_MS, ROOM_WORK_GRACE_MS } from '../src/host/constants.js'
+import { createGroupHistory } from '../src/host/group-history.js'
 
 // Chief, the admin of group 'r1', speaks there from 'ga'; Writer from 'gb'; Tester from 'gc'.
 const seed = (room = {}, extraRooms = {}) => ({
@@ -429,6 +430,17 @@ const busyRound = async (t, room, services) => {
   await settle(() => true)
   return { host, first }
 }
+
+test('REQ-20261023-0001 saves a group journal checkpoint with the room state', async (t) => {
+  const { host } = await busyRound(t)
+  await host.tool('post_to_group', { group: 'Ops', message: '新进展' }, 'a')
+  const room = JSON.parse(readFileSync(join(host.home, 'state.json'), 'utf8')).rooms.r1
+  assert.equal(room.historyJournal.seq, room.seq)
+  assert.match(room.historyJournal.digest, /^[0-9a-f]{64}$/u)
+  assert.deepEqual(createGroupHistory(host.home, () => true).inspect(room), {
+    complete: true, firstSeq: 1, lastSeq: room.seq,
+  })
+})
 
 test('a post during a running round is in the log at once, once, and shows in the round', async (t) => {
   const { host, first } = await busyRound(t)

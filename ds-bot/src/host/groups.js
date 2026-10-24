@@ -23,6 +23,7 @@ import { join } from 'node:path'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { GROUP_LINE_READ, ROOM_REPLY_TIMEOUT_MS, ROOM_STEP_GAP_MS, ROOM_WORK_GRACE_MS, SOURCE_KIND, TEAM_TOOLS, TEXT_KEPT } from './constants.js'
+import { createGroupHistory } from './group-history.js'
 import { escapeRegExp, headOf, splitRef, textOf } from './text.js'
 import { mentionSpans, speakerOf } from '../shared/mentions.js'
 import { GROUP_REF, output } from './tools.js'
@@ -131,11 +132,13 @@ const fileLine = file => `[File "${file.name}" (${file.bytes} bytes) attached]`
 
 export function install(rt) {
   const { ctx } = rt
+  const history = createGroupHistory(rt.home, () => rt.exclusiveWriter())
+  const recovered = new WeakSet()
 
   // A long line keeps its start in state.json, which is written whole on every save,
   // and what a member reads of it (GROUP_LINE_READ) in a file of its own: written once,
-  // before the state that names it, and removed with the line. All of it stays in the
-  // group's Session, where the group chat shows it.
+  // before the state that names it, and removed with the line. The full text also stays
+  // in the group history journal, including after this short-lived cache line rolls off.
   const linesDir = join(rt.home, 'group-lines')
   const lineFile = (roomId, seq) => join(linesDir, roomId, `${seq}.txt`)
   const wholeLines = new Map()
@@ -184,10 +187,20 @@ export function install(rt) {
   }
 
   const appendRoom = (room, line) => {
-    room.seq += 1
-    const log = [...room.log, keepGroupLine(room.id, { ...line, seq: room.seq }, line.text ?? '')]
+    if (rt.roomOf(room.id) !== room) throw new Error('Group chat changed; reload before posting')
+    ensureRoomLog(room)
+    if (!recovered.has(room)) {
+      history.recover(room)
+      recovered.add(room)
+    }
+    const next = { ...line, seq: room.seq + 1 }
+    const kept = keepGroupLine(room.id, next, line.text ?? '')
+    history.append(room, next)
+    room.seq = next.seq
+    const log = [...room.log, kept]
     for (const gone of log.slice(0, -ROOM_LOG_MAX)) dropGroupLine(room.id, gone)
     room.log = log.slice(-ROOM_LOG_MAX)
+    room.historyJournal = history.checkpoint(room)
   }
   Object.assign(rt, { keepGroupLine, dropGroupLines })
 

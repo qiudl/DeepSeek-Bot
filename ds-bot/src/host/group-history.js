@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { TEXT_KEPT } from './constants.js'
 import { headOf } from './text.js'
 
-const ID = /^session-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu
+const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u
 const DIGEST = /^[0-9a-f]{64}$/u
 const MAX_RECORD_BYTES = 2 * 1024 * 1024
 const CHUNK_BYTES = 64 * 1024
