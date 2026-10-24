@@ -64,3 +64,69 @@ test('REQ-20261023-0001 initializes an empty room as complete', async () => fixt
   room.log = [{ seq: 1, who: 'User', text: 'first' }]
   assert.deepEqual(history.inspect(room), { complete: true, firstSeq: 1, lastSeq: 1 })
 }))
+
+test('REQ-20261023-0001 recovers a full journal suffix not committed in team state', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  writer.append(room, { seq: 1, who: 'User', text: 'uncommitted' })
+  const restarted = createGroupHistory(home, () => true)
+  assert.deepEqual(restarted.recover(room), { complete: true, firstSeq: 1, lastSeq: 0 })
+  restarted.append(room, { seq: 1, who: 'User', text: 'committed' })
+  room.seq = 1
+  room.log = [{ seq: 1, who: 'User', text: 'committed' }]
+  assert.deepEqual(restarted.inspect(room), { complete: true, firstSeq: 1, lastSeq: 1 })
+}))
+
+test('REQ-20261023-0001 recovers a partial suffix only after the committed prefix', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  writer.append(room, { seq: 1, who: 'User', text: 'committed' })
+  room.seq = 1
+  room.log = [{ seq: 1, who: 'User', text: 'committed' }]
+  const path = join(home, 'group-history', `${roomId}.jsonl`)
+  await writeFile(path, `${await readFile(path, 'utf8')}{"seq":2`)
+  const restarted = createGroupHistory(home, () => true)
+  assert.deepEqual(restarted.recover(room), { complete: true, firstSeq: 1, lastSeq: 1 })
+  assert.deepEqual(restarted.inspect(room), { complete: true, firstSeq: 1, lastSeq: 1 })
+}))
+
+test('REQ-20261023-0001 refuses recovery when committed history is missing or changed', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  writer.append(room, { seq: 1, who: 'User', text: 'committed' })
+  room.seq = 1
+  room.log = [{ seq: 1, who: 'User', text: 'committed' }]
+  const path = join(home, 'group-history', `${roomId}.jsonl`)
+  const rows = (await readFile(path, 'utf8')).trimEnd().split('\n')
+  await writeFile(path, `${rows[0]}\n`)
+  assert.throws(() => createGroupHistory(home, () => true).recover(room), /needs recovery/u)
+  await writeFile(path, `${rows[0]}\n${rows[1].replace('committed', 'changed')}\n`)
+  assert.throws(() => createGroupHistory(home, () => true).recover(room), /needs recovery/u)
+}))
+
+test('REQ-20261023-0001 keeps a committed journal marker from being silently reseeded', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  writer.append(room, { seq: 1, who: 'User', text: 'committed' })
+  room.seq = 1
+  room.log = [{ seq: 1, who: 'User', text: 'committed' }]
+  room.historyJournal = writer.checkpoint(room)
+  const path = join(home, 'group-history', `${roomId}.jsonl`)
+  await rm(path)
+  assert.throws(() => createGroupHistory(home, () => true).recover(room), /needs recovery/u)
+  assert.throws(() => createGroupHistory(home, () => true).append(room, { seq: 2, who: 'User', text: 'next' }), /needs recovery/u)
+}))
+
+test('REQ-20261023-0001 checks the committed digest before trimming an uncommitted suffix', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  writer.append(room, { seq: 1, who: 'User', text: 'committed' })
+  room.seq = 1
+  room.log = [{ seq: 1, who: 'User', text: 'committed' }]
+  room.historyJournal = writer.checkpoint(room)
+  writer.append(room, { seq: 2, who: 'User', text: 'uncommitted' })
+  const recovered = createGroupHistory(home, () => true)
+  assert.deepEqual(recovered.recover(room), { complete: true, firstSeq: 1, lastSeq: 1 })
+  room.historyJournal.digest = '0'.repeat(64)
+  assert.throws(() => createGroupHistory(home, () => true).recover(room), /needs recovery/u)
+}))
