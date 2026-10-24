@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
+import { createGroupHistory } from '../src/host/group-history.js'
 import { lineText } from '../src/host/groups.js'
 import { fakeAttachments, fakeContext } from './fake-ctx.js'
 
@@ -547,6 +548,44 @@ test('a long group line keeps its start in state.json, and members and read_grou
   await again.call('delete-room', { id: room.id })
   await waitFor(() => (existsSync(join(home, 'group-lines', room.id)) ? undefined : true))
   assert.equal(existsSync(join(home, 'group-lines', room.id)), false)
+})
+
+test('REQ-20261023-0001 resumes a group after trimming a line never saved in team state', async (t) => {
+  const firstRun = start()
+  const { call, emit, userMessage, relay, answer, stop, sent, home, rt } = firstRun
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
+  const room = await team(call, sent)
+  await emit(room.id, userMessage('First'))
+  const running = relay(room.id, 'first-relay')
+  const first = await turnFor(sent)
+  await answer(first.sessionId, first.message.source.exchangeId, 'One.', 1)
+  const second = await turnFor(sent, first)
+  await answer(second.sessionId, second.message.source.exchangeId, 'Two.', 2)
+  await running
+  await rt.save()
+  await stop({ keep: true })
+
+  const saved = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')).rooms[room.id]
+  const history = createGroupHistory(join(home), () => true)
+  history.recover(saved)
+  history.append(saved, { seq: saved.seq + 1, who: 'User', text: 'not saved' })
+
+  const again = start({ home })
+  t.after(() => again.stop({ keep: true }))
+  await again.call('state', {})
+  await again.emit(room.id, again.userMessage('After restart'))
+  const next = again.relay(room.id, 'second-relay')
+  const one = await turnFor(again.sent)
+  await again.answer(one.sessionId, one.message.source.exchangeId, 'Three.', 3)
+  const two = await turnFor(again.sent, one)
+  await again.answer(two.sessionId, two.message.source.exchangeId, 'Four.', 4)
+  await next
+  const current = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')).rooms[room.id]
+  assert.equal(current.historyJournal.seq, current.seq)
+  assert.deepEqual(createGroupHistory(home, () => true).inspect(current), {
+    complete: true, firstSeq: 1, lastSeq: current.seq,
+  })
+  assert.equal(readFileSync(join(home, 'group-history', `${room.id}.jsonl`), 'utf8').includes('not saved'), false)
 })
 
 test('a group line longer than a member reads is cut in its prompt, with its length, and its file keeps only that', async (t) => {
