@@ -17,6 +17,19 @@ function activeSessions(source) {
   return active
 }
 
+/** A bounded room cache proves complete history only while it starts at sequence one. */
+export function assertCompleteSourceGroupLogs(source) {
+  for (const room of Object.values(source.rooms ?? {})) {
+    const log = room?.log
+    if (!Array.isArray(log) || !Number.isSafeInteger(room.seq) || room.seq < 0 ||
+        room.seq !== log.length || log.some((line, index) =>
+          !line || !Number.isSafeInteger(line.seq) || line.seq !== index + 1 ||
+          line.length !== undefined)) {
+      throw new Error('Source group chat history incomplete')
+    }
+  }
+}
+
 /** This checks evidence only. The caller must still freeze writes and commit atomically. */
 export async function verifyTeamImportStage({ source, target, plan, candidate, models = {},
   sourceMemoryRoot, memoryStageRoot, journal, verifySession }) {
@@ -24,6 +37,7 @@ export async function verifyTeamImportStage({ source, target, plan, candidate, m
       typeof journal?.read !== 'function' || typeof verifySession !== 'function') {
     throw new Error('Incomplete import preflight')
   }
+  assertCompleteSourceGroupLogs(source)
   const expected = stageTeamImport(source, target, plan, { models })
   if (!isDeepStrictEqual(candidate, expected)) throw new Error('Team candidate changed')
   const active = activeSessions(source)

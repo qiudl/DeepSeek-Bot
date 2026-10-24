@@ -7,7 +7,7 @@ import { createTeamImportJournal } from '../src/host/team-import-journal.js'
 import { inventoryTeamMemory } from '../src/host/team-import-memory.js'
 import { stageTeamMemory } from '../src/host/team-import-memory-stage.js'
 import { planTeamImport } from '../src/host/team-import-plan.js'
-import { verifyTeamImportStage } from '../src/host/team-import-preflight.js'
+import { assertCompleteSourceGroupLogs, verifyTeamImportStage } from '../src/host/team-import-preflight.js'
 import { stageTeamImport } from '../src/host/team-import-stage.js'
 
 const id = hex => `session-${hex.repeat(8)}-${hex.repeat(4)}-${hex.repeat(4)}-${hex.repeat(4)}-${hex.repeat(12)}`
@@ -74,5 +74,28 @@ test('REQ-20261023-0001 refuses stale state, incomplete Sessions and changed sta
     await writeFile(marker, original)
     await writeFile(join(data.memoryStageRoot, 'files', 'bots', data.plan.sessions[bot], 'MEMORY.md'), '# Altered\n')
     await assert.rejects(verifyTeamImportStage(data), /Staged memory changed/u)
+  } finally { await rm(data.root, { recursive: true, force: true }) }
+})
+
+test('REQ-20261023-0001 rejects a group cache that has already rolled off old chat', async () => {
+  const data = await fixture()
+  try {
+    const roomId = id('e')
+    const line = { seq: 61, who: 'User', text: 'latest only' }
+    const incomplete = { ...data.source, rooms: { [roomId]: {
+      id: roomId, seq: 61, log: [line], members: [bot], sessions: {}, segments: {},
+    } } }
+    assert.throws(() => assertCompleteSourceGroupLogs(incomplete), /group chat history incomplete/u)
+    await assert.rejects(verifyTeamImportStage({ ...data, source: incomplete }), /group chat history incomplete/u)
+    const complete = { ...incomplete, rooms: { [roomId]: {
+      ...incomplete.rooms[roomId], seq: 1, log: [{ ...line, seq: 1 }],
+    } } }
+    assert.doesNotThrow(() => assertCompleteSourceGroupLogs(complete))
+    assert.throws(() => assertCompleteSourceGroupLogs({ ...complete, rooms: { [roomId]: {
+      ...complete.rooms[roomId], log: [{ ...line, seq: 2 }],
+    } } }), /group chat history incomplete/u)
+    assert.throws(() => assertCompleteSourceGroupLogs({ ...complete, rooms: { [roomId]: {
+      ...complete.rooms[roomId], log: [{ ...line, seq: 1, length: 100 }],
+    } } }), /group chat history incomplete/u)
   } finally { await rm(data.root, { recursive: true, force: true }) }
 })
