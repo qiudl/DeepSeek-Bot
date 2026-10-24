@@ -31,7 +31,9 @@
 
 `team-remote-read.js` 现通过 Profile-local `dsBotSlarkRemoteRead` 服务提供 `team` 目录分页：Bot 的逻辑 ID、名称、角色和主 Bot 标记，以及群聊逻辑 ID、名称和成员。它要求本 Host 真正持有团队独占写锁，拒绝导入标记、只读副本和失锁状态；游标绑定团队修订号并限制返回字节。模型、工作目录、指令、密钥、原生 Session ID 与群日志均不在响应中。用户 fork 的 DSH 分支已有 Account 绑定的 Unix `profile.bot_team_read`，Slark 隔离源码已有受信设备 E2EE 的 `bot/team` 转发；正式 Slark 安装包尚未固定该 DSH 分支，也没有 Bot 页面消费入口。
 
-同一服务新增 `memory` 的 Profile-local 投影：只接受 `team`、现有 `bot:<id>` 或 `room:<id>` 的逻辑范围，不接受任意路径/Profile 选择器。只读扫描该范围的 `MEMORY.md` 和小写主题 Markdown，拒绝符号链接、未知文件和超限文件；每页至多 32 KiB 原始字节，以 base64 返回文件名、字节偏移、总字节数和 SHA-256。游标绑定整个范围所有文件的摘要；页间文件变化必须从头重读。空范围与不存在的记忆目录返回空页，不把快照或 `reviewed.json` 冒充事实记忆。该投影目前**仅在 DS Bot 插件内**，DSH Unix 方法和 Slark E2EE 通道只接受 `team`，尚未传递记忆正文；聊天读取、发送回执、Boston 加密副本也未实现。
+同一服务新增 `memory` 的 Profile-local 投影：只接受 `team`、现有 `bot:<id>` 或 `room:<id>` 的逻辑范围，不接受任意路径/Profile 选择器。只读扫描该范围的 `MEMORY.md` 和小写主题 Markdown，拒绝符号链接、未知文件和超限文件；每页至多 32 KiB 原始字节，以 base64 返回文件名、字节偏移、总字节数和 SHA-256。游标绑定整个范围所有文件的摘要；页间文件变化必须从头重读。空范围与不存在的记忆目录返回空页，不把快照或 `reviewed.json` 冒充事实记忆。DSH 用户 fork 已有 Account 绑定的 Unix `profile.bot_memory_read`，Slark 隔离源码已有受信设备 E2EE 的 `bot/memory` 转发；正式安装包尚未固定这些版本，DS Bot 页面未消费该入口。聊天读取、发送回执、Boston 加密副本也未实现。
+
+聊天投影的来源不能简单使用团队状态：`groups.js` 的 `ROOM_LOG_MAX=60`，`room.log` 只保留最近 60 条群消息；长消息的 `group-lines/` 文件也随旧条目滚出而删除。Bot 私聊由多个持久化 DSH Session 段组成，群成员又有各自的 Session 段。后续只读投影须按团队逻辑 ID 验证 Session 所有权，通过 DSH 公共持久化接口读取、去重并保留可证明的顺序；单靠 `room.log` 会永久漏掉旧群消息。需要先验证旧群 Session 能恢复哪些用户/Bot 发言与系统通知，再确定对不可恢复旧行的明确状态；对新增群消息应建立持久的完整历史来源和中断恢复规则，才能宣称长期聊天同步完整。
 
 ## 待验证门槛
 
