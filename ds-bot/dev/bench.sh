@@ -71,8 +71,15 @@ write_overlay() {
   if [ -n "${CHECK_RATIO:-}" ]; then
     printf -- '- id: bot\n  config:\n    checkRatio: %s\n' "$CHECK_RATIO" > "$overlay"
   fi
+  if [ "${SLARK_EXTERNAL_GROUP:-}" = true ]; then
+    if [ -n "${CHECK_RATIO:-}" ]; then
+      printf '    slarkExternalGroup: true\n' >> "$overlay"
+    else
+      printf -- '- id: bot\n  config:\n    slarkExternalGroup: true\n' > "$overlay"
+    fi
+  fi
   if [ -n "${CONTEXT_WINDOW:-}" ]; then
-    [ -n "${CHECK_RATIO:-}" ] || : > "$overlay"
+    [ -n "${CHECK_RATIO:-}" ] || [ "${SLARK_EXTERNAL_GROUP:-}" = true ] || : > "$overlay"
     {
       printf -- '- id: llm-deepseek\n  config:\n    models:\n'
       printf -- '      - { id: deepseek-flash, contextWindow: %s, maxTokens: 8000, inputModalities: [text, image] }\n' "$CONTEXT_WINDOW"
