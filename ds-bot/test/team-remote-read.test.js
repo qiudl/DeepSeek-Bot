@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
-import { parseRemoteMemoryRead, parseRemoteTeamRead, projectRemoteMemory, projectRemoteTeam } from '../src/host/team-remote-read.js'
+import { createGroupHistory } from '../src/host/group-history.js'
+import { parseRemoteGroupHistoryRead, parseRemoteMemoryRead, parseRemoteTeamRead,
+  projectRemoteGroupHistory, projectRemoteMemory, projectRemoteTeam } from '../src/host/team-remote-read.js'
 import { fakeContext } from './fake-ctx.js'
 
 const request = { schema_version: 'dsh-remote-bot-read/v1', kind: 'team', limit: 1 }
@@ -134,4 +136,82 @@ test('REQ-20261023-0001 memory read rejects selectors, unknown scopes and symbol
   mkdirSync(dir, { recursive: true })
   symlinkSync(join(home, 'outside.md'), join(dir, 'MEMORY.md'))
   await assert.rejects(projectRemoteMemory(state, home, target), { code: 'bot/invalid' })
+})
+
+test('REQ-20261023-0001 group history pages exclude uncommitted bytes and stale cursors', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-group-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const room = { id: 'project', seq: 0, log: [] }
+  const source = { rooms: { project: room } }
+  const writer = createGroupHistory(home, () => true)
+  for (let seq = 1; seq <= 3; seq++) {
+    const line = { seq, who: 'User', text: 'group text '.repeat(60) + seq }
+    writer.append(room, line)
+    room.seq = seq
+    room.log.push(line)
+    room.historyJournal = writer.checkpoint(room)
+  }
+  writer.append(room, { seq: 4, who: 'User', text: 'uncommitted' })
+  const request = { schema_version: 'dsh-remote-bot-read/v1', kind: 'group-history',
+    logical_id: 'room:project', limit: 111 }
+  const chunks = []
+  let cursor
+  let first
+  do {
+    const page = projectRemoteGroupHistory(source, home, { ...request, ...(cursor ? { cursor } : {}) }, () => 0)
+    first ??= page
+    assert.ok(Buffer.byteLength(JSON.stringify(page), 'utf8') <= 60 * 1024)
+    assert.equal(page.seq, 3)
+    assert.equal(page.digest, room.historyJournal.digest)
+    assert.equal(page.last_confirmed_at, '1970-01-01T00:00:00.000Z')
+    chunks.push(Buffer.from(page.content_base64, 'base64'))
+    cursor = page.next_cursor
+  } while (cursor)
+  const bytes = Buffer.concat(chunks)
+  assert.equal(bytes.length, first.total_bytes)
+  assert.equal(bytes.toString('utf8').includes('uncommitted'), false)
+  room.historyJournal.digest = '0'.repeat(64)
+  assert.throws(() => projectRemoteGroupHistory(source, home,
+    { ...request, cursor: first.next_cursor }), { code: 'bot/stale' })
+})
+
+test('REQ-20261023-0001 group history read refuses selectors and incomplete sources', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-group-'))
+  t.after(() => rmSync(home, { recursive: true, force: true }))
+  const request = { schema_version: 'dsh-remote-bot-read/v1', kind: 'group-history',
+    logical_id: 'room:project' }
+  for (const value of [{ ...request, profile_id: 'other' },
+    { ...request, logical_id: 'room:../other' }, { ...request, limit: 32 * 1024 + 1 }]) {
+    assert.throws(() => parseRemoteGroupHistoryRead(value), { code: 'bot/invalid' })
+  }
+  assert.throws(() => projectRemoteGroupHistory({ rooms: {} }, home, request), { code: 'bot/invalid' })
+  assert.throws(() => projectRemoteGroupHistory({ rooms: { project: {
+    id: 'project', seq: 61, log: [{ seq: 61, text: 'tail' }],
+  } } }, home, request), { code: 'bot/incomplete' })
+  assert.equal(projectRemoteGroupHistory({ rooms: { project: { id: 'project', seq: 0, log: [] } } },
+    home, request).total_bytes, 0)
+})
+
+test('REQ-20261023-0001 remote group service reads committed state, not unsaved memory', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-group-'))
+  const ctx = fakeContext()
+  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  t.after(async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true }) })
+  await rt.load()
+  const room = { id: 'project', seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  const line = { seq: 1, who: 'User', text: 'committed' }
+  writer.append(room, line)
+  room.seq = 1
+  room.log = [line]
+  room.historyJournal = writer.checkpoint(room)
+  rt.state.rooms.project = room
+  await rt.save()
+  const service = ctx.get('dsBotSlarkRemoteRead')
+  const request = { schema_version: 'dsh-remote-bot-read/v1', kind: 'group-history',
+    logical_id: 'room:project' }
+  room.seq = 2
+  const page = await service.read(request)
+  assert.equal(page.seq, 1)
+  assert.match(Buffer.from(page.content_base64, 'base64').toString(), /committed/u)
 })

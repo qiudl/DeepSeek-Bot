@@ -130,3 +130,33 @@ test('REQ-20261023-0001 checks the committed digest before trimming an uncommitt
   room.historyJournal.digest = '0'.repeat(64)
   assert.throws(() => createGroupHistory(home, () => true).recover(room), /needs recovery/u)
 }))
+
+test('REQ-20261023-0001 pages only the committed journal bytes', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  for (let seq = 1; seq <= 3; seq++) {
+    const line = { seq, who: 'User', text: `line ${seq} ` + '长'.repeat(100) }
+    writer.append(room, line)
+    room.seq = seq
+    room.log.push(line)
+    room.historyJournal = writer.checkpoint(room)
+  }
+  writer.append(room, { seq: 4, who: 'User', text: 'uncommitted' })
+  const reader = createGroupHistory(home, () => false)
+  const chunks = []
+  let total
+  for (let offset = 0; total === undefined || offset < total;) {
+    const page = reader.readChunk(room, offset, 73)
+    assert.equal(page.seq, 3)
+    assert.equal(page.digest, room.historyJournal.digest)
+    total = page.totalBytes
+    chunks.push(page.content)
+    offset += page.content.length
+  }
+  const text = Buffer.concat(chunks).toString('utf8')
+  assert.equal(Buffer.byteLength(text), total)
+  assert.equal(text.includes('uncommitted'), false)
+  assert.match(text, /line 3/u)
+  assert.throws(() => reader.readChunk(room, total + 1, 73), /needs recovery/u)
+  assert.throws(() => reader.readChunk(room, 0, 32 * 1024 + 1), /needs recovery/u)
+}))

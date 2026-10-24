@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { TEXT_KEPT } from './constants.js'
 import { headOf } from './text.js'
 
-const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,122}$/u
 const DIGEST = /^[0-9a-f]{64}$/u
 const MAX_RECORD_BYTES = 2 * 1024 * 1024
 const CHUNK_BYTES = 64 * 1024
@@ -207,6 +207,30 @@ export function createGroupHistory(home, exclusiveWriter) {
       const state = current.get(room.id)
       if (state === undefined || state.lastSeq !== room.seq) throw invalid()
       return { seq: state.lastSeq, digest: state.previous }
+    },
+    readChunk(room, offset, maxBytes) {
+      if (!row(room.historyJournal) || !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 32 * 1024) throw invalid()
+      if (!lstatSync(dir).isDirectory()) throw invalid()
+      const path = pathOf(room.id)
+      const state = scan(path, room.id, room.seq)
+      const log = room.log ?? []
+      if (!Array.isArray(log) || state.tail.length < log.length ||
+          log.some((line, index) => state.tail[state.tail.length - log.length + index] !== cacheProof(line)) ||
+          offset > state.offset) throw invalid()
+      committed(room, state)
+      const fd = openSync(path, constants.O_RDONLY | noFollow)
+      try {
+        if (!fstatSync(fd).isFile() || fstatSync(fd).size < state.offset) throw invalid()
+        const content = Buffer.alloc(Math.min(maxBytes, state.offset - offset))
+        for (let at = 0; at < content.length;) {
+          const count = readSync(fd, content, at, content.length - at, offset + at)
+          if (count <= 0) throw invalid()
+          at += count
+        }
+        return { complete: state.header.complete, seq: state.lastSeq,
+          digest: state.previous, totalBytes: state.offset, content }
+      } finally { closeSync(fd) }
     },
     inspect(room) {
       const state = scan(pathOf(room.id), room.id)

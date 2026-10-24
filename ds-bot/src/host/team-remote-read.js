@@ -1,8 +1,9 @@
 // A Profile-local projection for the Slark Host. No browser route uses this service.
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, open, readdir } from 'node:fs/promises'
+import { lstat, open, readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createGroupHistory } from './group-history.js'
 const SCHEMA = 'dsh-remote-bot-read/v1'
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,122}$/u
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u
@@ -16,6 +17,8 @@ const DIGEST = /^[0-9a-f]{64}$/u
 const row = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
 const invalid = () => Object.assign(new Error('Invalid remote Bot team request'), { code: 'bot/invalid' })
+const stale = () => Object.assign(new Error('Remote Bot group history changed'), { code: 'bot/stale' })
+const incomplete = () => Object.assign(new Error('Source group history incomplete'), { code: 'bot/incomplete' })
 
 function readCursor(value, revision) {
   if (value === undefined) return 0
@@ -50,6 +53,57 @@ export function parseRemoteMemoryRead(value) {
       (Object.hasOwn(value, 'limit') && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 100)) ||
       (Object.hasOwn(value, 'cursor') && (typeof value.cursor !== 'string' || !CURSOR.test(value.cursor)))) throw invalid()
   return { logicalId: value.logical_id, cursor: value.cursor }
+}
+
+export function parseRemoteGroupHistoryRead(value) {
+  if (!row(value) || value.schema_version !== SCHEMA || value.kind !== 'group-history' ||
+      typeof value.logical_id !== 'string' || !/^room:[A-Za-z0-9][A-Za-z0-9._-]{0,122}$/u.test(value.logical_id) ||
+      Object.keys(value).some(key => !['schema_version', 'kind', 'logical_id', 'cursor', 'limit'].includes(key)) ||
+      (Object.hasOwn(value, 'limit') && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 32 * 1024)) ||
+      (Object.hasOwn(value, 'cursor') && (typeof value.cursor !== 'string' || !CURSOR.test(value.cursor)))) throw invalid()
+  return { roomId: value.logical_id.slice(5), limit: value.limit ?? 32 * 1024, cursor: value.cursor }
+}
+
+function groupCursor(value, room) {
+  if (value === undefined) return 0
+  let decoded
+  try {
+    const bytes = Buffer.from(value, 'base64url')
+    if (bytes.toString('base64url') !== value || bytes.length > 256) throw invalid()
+    decoded = JSON.parse(bytes.toString('utf8'))
+  } catch { throw invalid() }
+  if (!row(decoded) || !exact(decoded, ['seq', 'digest', 'offset']) ||
+      !Number.isSafeInteger(decoded.seq) || !DIGEST.test(decoded.digest) ||
+      !Number.isSafeInteger(decoded.offset) || decoded.offset < 0) throw invalid()
+  if (decoded.seq !== room.seq || decoded.digest !== room.historyJournal?.digest) throw stale()
+  return decoded.offset
+}
+
+/** One committed byte slice; the receiver verifies JSONL records after reassembly. */
+export function projectRemoteGroupHistory(state, home, request, now = Date.now) {
+  const { roomId, limit, cursor } = parseRemoteGroupHistoryRead(request)
+  const room = state?.rooms?.[roomId]
+  if (!row(room) || room.id !== roomId || !Number.isSafeInteger(room.seq) || room.seq < 0) throw invalid()
+  const offset = groupCursor(cursor, room)
+  let page
+  if (room.seq === 0 && room.historyJournal === undefined && (room.log?.length ?? 0) === 0) {
+    if (offset !== 0) throw stale()
+    page = { complete: true, seq: 0, digest: createHash('sha256').update('').digest('hex'),
+      totalBytes: 0, content: Buffer.alloc(0) }
+  } else {
+    if (!row(room.historyJournal)) throw incomplete()
+    try { page = createGroupHistory(home, () => false).readChunk(room, offset, limit) }
+    catch { throw incomplete() }
+  }
+  const next = offset + page.content.length < page.totalBytes
+    ? Buffer.from(JSON.stringify({ seq: page.seq, digest: page.digest,
+      offset: offset + page.content.length })).toString('base64url') : null
+  const result = { logical_id: `room:${roomId}`, seq: page.seq, digest: page.digest,
+    complete: page.complete, total_bytes: page.totalBytes, offset,
+    content_base64: page.content.toString('base64'), next_cursor: next,
+    source: 'authority', last_confirmed_at: new Date(now()).toISOString() }
+  if (Buffer.byteLength(JSON.stringify(result), 'utf8') > MAX_RESULT_BYTES) throw invalid()
+  return result
 }
 
 async function regularDirectory(path) {
@@ -184,6 +238,13 @@ export function install(rt) {
       if (!rt.exclusiveWriter()) throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
       if (request?.kind === 'team') return projectRemoteTeam(rt.state, request)
       if (request?.kind === 'memory') return projectRemoteMemory(rt.state, rt.home, request)
+      if (request?.kind === 'group-history') {
+        const committed = JSON.parse(await readFile(rt.statePath, 'utf8'))
+        signal?.throwIfAborted()
+        const result = projectRemoteGroupHistory(committed, rt.home, request)
+        if (!rt.exclusiveWriter()) throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
+        return result
+      }
       throw invalid()
     },
   }), 'ds-bot: remote read')
