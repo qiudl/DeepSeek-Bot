@@ -51,7 +51,10 @@ function scan(path, roomId, stopSeq) {
     const chunk = Buffer.alloc(CHUNK_BYTES)
     let pending = Buffer.alloc(0)
     let offset = 0
-    const result = () => ({ header, lastSeq, previous, tail, offset, fileSize: fstatSync(fd).size })
+    const result = () => {
+      const stat = fstatSync(fd, { bigint: true })
+      return { header, lastSeq, previous, tail, offset, fileSize: Number(stat.size), stamp: stamp(stat) }
+    }
     const take = bytes => {
       let value
       try { value = JSON.parse(bytes.toString('utf8')) } catch { throw invalid() }
@@ -94,10 +97,16 @@ function scan(path, roomId, stopSeq) {
   } finally { closeSync(fd) }
 }
 
+const stamp = stat => ({ dev: stat.dev, ino: stat.ino, size: stat.size,
+  mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs })
+const sameStamp = (left, right) => left.dev === right.dev && left.ino === right.ino &&
+  left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs
+
 /** One Profile-local durable source for future group transcript reads. */
 export function createGroupHistory(home, exclusiveWriter) {
   const dir = join(home, 'group-history')
   const current = new Map()
+  const validated = new Map()
   const pathOf = id => {
     if (typeof id !== 'string' || !ID.test(id)) throw invalid()
     return join(dir, `${id}.jsonl`)
@@ -213,24 +222,43 @@ export function createGroupHistory(home, exclusiveWriter) {
           !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 32 * 1024) throw invalid()
       if (!lstatSync(dir).isDirectory()) throw invalid()
       const path = pathOf(room.id)
-      const state = scan(path, room.id, room.seq)
+      const cached = validated.get(room.id)
+      const fd = openSync(path, constants.O_RDONLY | noFollow)
+      let state
+      try {
+        const stat = fstatSync(fd, { bigint: true })
+        if (!stat.isFile()) throw invalid()
+        state = cached && cached.lastSeq === room.seq &&
+          sameStamp(cached.stamp, stamp(stat)) ? cached : undefined
+      } finally { closeSync(fd) }
+      if (!state) {
+        validated.delete(room.id)
+        state = scan(path, room.id, room.seq)
+      }
       const log = room.log ?? []
-      if (!Array.isArray(log) || state.tail.length < log.length ||
+      if (!Array.isArray(log) || state.lastSeq !== room.seq || state.tail.length < log.length ||
           log.some((line, index) => state.tail[state.tail.length - log.length + index] !== cacheProof(line)) ||
           offset > state.offset) throw invalid()
       committed(room, state)
-      const fd = openSync(path, constants.O_RDONLY | noFollow)
+      const readFd = openSync(path, constants.O_RDONLY | noFollow)
       try {
-        if (!fstatSync(fd).isFile() || fstatSync(fd).size < state.offset) throw invalid()
+        const stat = fstatSync(readFd, { bigint: true })
+        if (!stat.isFile() || !sameStamp(state.stamp, stamp(stat)) || Number(stat.size) < state.offset)
+          throw invalid()
         const content = Buffer.alloc(Math.min(maxBytes, state.offset - offset))
         for (let at = 0; at < content.length;) {
-          const count = readSync(fd, content, at, content.length - at, offset + at)
+          const count = readSync(readFd, content, at, content.length - at, offset + at)
           if (count <= 0) throw invalid()
           at += count
         }
+        const after = fstatSync(readFd, { bigint: true })
+        if (!sameStamp(state.stamp, stamp(after))) throw invalid()
+        validated.delete(room.id)
+        validated.set(room.id, state)
+        if (validated.size > 64) validated.delete(validated.keys().next().value)
         return { complete: state.header.complete, seq: state.lastSeq,
           digest: state.previous, totalBytes: state.offset, content }
-      } finally { closeSync(fd) }
+      } finally { closeSync(readFd) }
     },
     inspect(room) {
       const state = scan(pathOf(room.id), room.id)

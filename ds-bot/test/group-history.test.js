@@ -160,3 +160,19 @@ test('REQ-20261023-0001 pages only the committed journal bytes', async () => fix
   assert.throws(() => reader.readChunk(room, total + 1, 73), /needs recovery/u)
   assert.throws(() => reader.readChunk(room, 0, 32 * 1024 + 1), /needs recovery/u)
 }))
+
+test('REQ-20261023-0001 cached pages invalidate when a committed journal changes', async () => fixture(async home => {
+  const room = { id: roomId, seq: 0, log: [] }
+  const writer = createGroupHistory(home, () => true)
+  const line = { seq: 1, who: 'User', text: 'committed' }
+  writer.append(room, line)
+  room.seq = 1
+  room.log = [line]
+  room.historyJournal = writer.checkpoint(room)
+  const reader = createGroupHistory(home, () => false)
+  const first = reader.readChunk(room, 0, 9)
+  assert.equal(first.seq, 1)
+  const path = join(home, 'group-history', `${roomId}.jsonl`)
+  await writeFile(path, (await readFile(path, 'utf8')).replace('committed', 'tamperedd'))
+  assert.throws(() => reader.readChunk(room, 9, 9), /needs recovery/u)
+}))

@@ -80,7 +80,7 @@ function groupCursor(value, room) {
 }
 
 /** One committed byte slice; the receiver verifies JSONL records after reassembly. */
-export function projectRemoteGroupHistory(state, home, request, now = Date.now) {
+export function projectRemoteGroupHistory(state, home, request, now = Date.now, history) {
   const { roomId, limit, cursor } = parseRemoteGroupHistoryRead(request)
   const room = state?.rooms?.[roomId]
   if (!row(room) || room.id !== roomId || !Number.isSafeInteger(room.seq) || room.seq < 0) throw invalid()
@@ -92,7 +92,7 @@ export function projectRemoteGroupHistory(state, home, request, now = Date.now) 
       totalBytes: 0, content: Buffer.alloc(0) }
   } else {
     if (!row(room.historyJournal)) throw incomplete()
-    try { page = createGroupHistory(home, () => false).readChunk(room, offset, limit) }
+    try { page = (history ?? createGroupHistory(home, () => false)).readChunk(room, offset, limit) }
     catch { throw incomplete() }
   }
   const next = offset + page.content.length < page.totalBytes
@@ -230,6 +230,7 @@ export function projectRemoteTeam(state, request, now = Date.now) {
 }
 
 export function install(rt) {
+  const history = createGroupHistory(rt.home, () => false)
   rt.ctx.effect(() => rt.ctx.provide('dsBotSlarkRemoteRead', {
     async read(request, signal) {
       signal?.throwIfAborted()
@@ -241,7 +242,7 @@ export function install(rt) {
       if (request?.kind === 'group-history') {
         const committed = JSON.parse(await readFile(rt.statePath, 'utf8'))
         signal?.throwIfAborted()
-        const result = projectRemoteGroupHistory(committed, rt.home, request)
+        const result = projectRemoteGroupHistory(committed, rt.home, request, Date.now, history)
         if (!rt.exclusiveWriter()) throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
         return result
       }
