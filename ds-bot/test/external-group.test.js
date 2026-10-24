@@ -231,7 +231,8 @@ test('writer loss and malformed scope cannot create external group sessions', as
 test('finished Bot turn enters a stable result page and revoked cycle rejects new work', async () => {
   const f = fixture()
   const accepted = await f.service.deliver(input)
-  f.emit(accepted.sessionId, { type: 'user/message', data: { turn: 1,
+  f.emit(accepted.sessionId, { type: 'turn/start', data: { turn: 1 } })
+  f.emit(accepted.sessionId, { type: 'user/message', data: {
     source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } })
   f.emit(accepted.sessionId, { type: 'assistant/message', data: { turn: 1,
     message: { content: [{ type: 'text', text: 'Plan checked.' }] } } })
@@ -281,10 +282,25 @@ test('result page recovers a completed turn from DSH Session history after Host 
   restarted.setHistory([
     { type: 'turn/end', data: { turn: 9, reason: { kind: 'completed' } } },
     { type: 'assistant/message', data: { turn: 9, message: { content: [{ type: 'text', text: 'Recovered result.' }] } } },
-    { type: 'user/message', data: { turn: 9, source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } },
+    { type: 'user/message', data: { source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } },
+    { type: 'turn/start', data: { turn: 9 } },
   ])
   const page = await restarted.service.resultPage(input)
   assert.equal(page.results[0].text, 'Recovered result.')
   assert.equal((await restarted.service.receipt(input)).state, 'result_recorded')
   assert.equal(restarted.sent.length, 0)
+})
+
+test('history recovery does not attach another turn result to an earlier delivery', async () => {
+  const first = fixture()
+  await first.service.deliver(input)
+  const restarted = fixture(true, first.saved)
+  restarted.setHistory([
+    { type: 'turn/end', data: { turn: 10, reason: { kind: 'completed' } } },
+    { type: 'assistant/message', data: { turn: 10, message: { content: [{ type: 'text', text: 'Unrelated.' }] } } },
+    { type: 'turn/start', data: { turn: 10 } },
+    { type: 'user/message', data: { source: { kind: 'bot', role: 'external_group', exchangeId: input.deliveryId } } },
+  ])
+  assert.deepEqual(await restarted.service.resultPage(input), { state: 'ok', results: [], next: 0 })
+  assert.equal((await restarted.service.receipt(input)).state, 'accepted')
 })

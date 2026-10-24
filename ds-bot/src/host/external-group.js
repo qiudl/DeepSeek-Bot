@@ -34,6 +34,7 @@ export function install(rt) {
       payloadDigest: record.payloadDigest, sessionId: record.sessionId,
       ...(record.state === 'result_recorded' ? { resultId: `${record.deliveryId}:final` } : {}) }
   const live = new Map()
+  const activeTurns = new Map()
   const turnKey = (sessionId, turn) => `${sessionId}:${turn}`
   const recordResult = async (deliveryId, raw, status) => {
     const record = rt.own(rt.state.externalGroup.deliveries, deliveryId)
@@ -60,9 +61,16 @@ export function install(rt) {
       rt.state.externalGroup.results.some(result => result.deliveryId === record.deliveryId) ||
       typeof rt.eventsBackwards !== 'function') return
     const turns = new Map()
+    let activeTurn = null
     try {
       for await (const event of rt.eventsBackwards(record.sessionId, AbortSignal.timeout(15_000), Infinity)) {
-        const turn = event.data?.turn
+        if (event.type === 'turn/start') {
+          activeTurn = null
+          continue
+        }
+        if (event.type === 'turn/end' && Number.isSafeInteger(event.data?.turn))
+          activeTurn = event.data.turn
+        const turn = event.data?.turn ?? (event.type === 'user/message' ? activeTurn : null)
         if (!Number.isSafeInteger(turn)) continue
         let entry = turns.get(turn)
         if (entry === undefined) turns.set(turn, entry = { texts: [] })
@@ -84,8 +92,12 @@ export function install(rt) {
   }
   rt.ctx.on?.('session/event', (session, event) => {
     const id = session?.id
-    const turn = event.data?.turn
-    if (typeof id !== 'string' || !Number.isSafeInteger(turn)) return
+    if (typeof id !== 'string') return
+    if (event.type === 'turn/start' && Number.isSafeInteger(event.data?.turn))
+      activeTurns.set(id, event.data.turn)
+    const turn = event.data?.turn ?? (event.type === 'user/message' ? activeTurns.get(id) : null)
+    if (event.type === 'turn/end') activeTurns.delete(id)
+    if (!Number.isSafeInteger(turn)) return
     const key = turnKey(id, turn)
     if (event.type === 'user/message' && event.data?.source?.kind === SOURCE_KIND &&
       event.data.source.role === 'external_group') {

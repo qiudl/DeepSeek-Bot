@@ -538,7 +538,6 @@ export function install(rt) {
         }
         await rt.save()
         round.turns += 1
-        turns.set(native.id, (turns.get(native.id) ?? 0) + 1)
         slot.status = 'working'
         round.replies.push({ kind: 'working', botId: native.id, name: native.name,
           time: Date.now() })
