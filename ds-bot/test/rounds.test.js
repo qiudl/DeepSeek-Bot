@@ -521,6 +521,10 @@ test('a long group line keeps its start in state.json, and members and read_grou
   const fillers = Array.from({ length: 60 - kept.log.length }, (_, at) => ({ who: 'User', text: `line ${at}`, seq: kept.seq + at + 1 }))
   kept.log = [...kept.log, ...fillers]
   kept.seq += fillers.length
+  // Simulate a pre-journal team: this fixture hand-edits the saved cache, so its
+  // journal and checkpoint cannot stand for the newly invented lines.
+  delete kept.historyJournal
+  rmSync(join(home, 'group-history', `${room.id}.jsonl`))
   writeFileSync(file, JSON.stringify(onDisk))
 
   // After a restart the whole line is read back from its file.
