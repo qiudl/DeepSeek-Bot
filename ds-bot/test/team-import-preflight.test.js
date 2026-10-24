@@ -91,6 +91,9 @@ test('REQ-20261023-0001 rejects a group cache that has already rolled off old ch
       ...incomplete.rooms[roomId], seq: 1, log: [{ ...line, seq: 1 }],
     } } }
     assert.doesNotThrow(() => assertCompleteSourceGroupLogs(complete))
+    assert.doesNotThrow(() => assertCompleteSourceGroupLogs({ ...complete, rooms: { [roomId]: {
+      id: roomId, members: [bot], sessions: {}, segments: {},
+    } } }))
     assert.throws(() => assertCompleteSourceGroupLogs({ ...complete, rooms: { [roomId]: {
       ...complete.rooms[roomId], log: [{ ...line, seq: 2 }],
     } } }), /group chat history incomplete/u)

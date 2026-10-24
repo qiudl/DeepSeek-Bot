@@ -21,6 +21,8 @@ function activeSessions(source) {
 export function assertCompleteSourceGroupLogs(source) {
   for (const room of Object.values(source.rooms ?? {})) {
     const log = room?.log
+    if ((room?.seq === undefined || room.seq === 0) &&
+        (log === undefined || Array.isArray(log) && log.length === 0)) continue
     if (!Array.isArray(log) || !Number.isSafeInteger(room.seq) || room.seq < 0 ||
         room.seq !== log.length || log.some((line, index) =>
           !line || !Number.isSafeInteger(line.seq) || line.seq !== index + 1 ||
