@@ -84,6 +84,8 @@ m5max 的另一份隔离 DSH Profile 验证：在启动正式 `runProfile` 前�
 
 `team-import-agent.js` 另提供 `verifyImportedAgent`：从来源事件重新生成映射 seed，先核对阶段日志里的事件摘要，再经正式 `sessionController.resolveAgent()` 重开目标 Agent，比较持久化事件的完整 seed 前缀；允许 DSH 在其后添加生命周期事件。正式导入入口尚未提供来源事件解码器，也尚未把该校验接入激活前核验的 `verifySession` 回调。
 
+只读群历史清单探针 `team-import-group-history.js` 现在区分两类完整来源：未建日志但缓存从序号 1 连续且没有截断的旧群，以及有团队状态提交标记、完整日志头和摘要链的新群。后者通过 `createGroupHistory.readChunk` 以只读方式核对已提交前缀，即使界面缓存已经滚动超过 60 条也能盘点序号、摘要和字节数；旧群只有尾部或长文截断时拒绝。该清单只是来源证据，尚未把日志正文分片加密传到目标、映射日志里的 Bot ID、暂存目标日志或接入激活预检；现有预检仍拒绝超过缓存的群，不能将清单成功称为聊天已迁入。
+
 m5max 隔离冷启动探针确认：`resolveAgent()` 本身会取得 Session 写句柄，并将 Agent 注册到当前 DSH Host；之后不可再对同一 Session 调用 `agents.resume()`，否则 DSH 报 `SessionAlreadyOwnedError`。核验器不修改 DS Bot 团队状态，但 DSH 打开 Session 时可能补写生命周期事件；其“只读”仅指不激活团队、不改原团队文件，正式流程应复用已解析的 Agent 并限制打开数量。隔离旧段重启后由 `resolveAgent()` 独立打开，122 条来源事件前缀和 30 条消息均保持一致。
 
 来源读取改用 DSH 公共 `ctx.sessionPersistence.open(id, 'read')`：该 seam 不取得写入权，返回已验证的当前逻辑事件，旧物理格式由 DSH 后端在内存中准备。`team-import-source.js` 只允许当前来源 Profile 中已列入导入计划的团队 Session ID，先按 `stat` 拒绝过大记录，再有界读取、关闭句柄并复核同一服务实例的修订及事件数；只返回事件、数量和摘要，不返回带绝对工作目录的 header。m5max 隔离 mock 来源 10 个团队 Session 经此接口读取共 658 条事件，与此前独立解码计数相同。正式 Host 还须认证计划来源，不能接受远端自造计划。此探针没有运行在 Boston 真实 Profile；正式传输仍须定义加密分片、附件和跨设备来源摘要，不能把 mock 成功当作真实迁移许可。
