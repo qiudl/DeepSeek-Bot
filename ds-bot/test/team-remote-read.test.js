@@ -250,9 +250,19 @@ test('REQ-20261023-0001 private Bot chat service uses committed team and read-on
   assert.deepEqual(opened, [[id, 'read']])
   assert.equal(page.part_count, 1)
   assert.equal(Buffer.from(page.content_base64, 'base64').toString().includes('/private/source'), false)
+  events[1].data.content.push({ type: 'image', attachment: {
+    attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png',
+    bytes: 12, width: 1, height: 1, name: 'photo.png',
+  } })
+  const attachmentRequest = { schema_version: 'dsh-remote-bot-read/v1',
+    kind: 'bot-chat-attachments', logical_id: `bot:${id}`, part: 0, limit: 10 }
+  const manifest = await service.read(attachmentRequest)
+  assert.deepEqual(manifest.items.map(item => [item.eventSeq, item.blockIndex]), [[1, 1]])
+  assert.equal(JSON.stringify(manifest).includes('/private/source'), false)
+  assert.deepEqual(opened, [[id, 'read'], [id, 'read']])
   revokeDuringRead = true
+  await assert.rejects(service.read(attachmentRequest), { code: 'bot/read-only' })
+  assert.deepEqual(opened, [[id, 'read'], [id, 'read'], [id, 'read']])
   await assert.rejects(service.read(request), { code: 'bot/read-only' })
-  assert.deepEqual(opened, [[id, 'read'], [id, 'read']])
-  await assert.rejects(service.read(request), { code: 'bot/read-only' })
-  assert.deepEqual(opened, [[id, 'read'], [id, 'read']])
+  assert.deepEqual(opened, [[id, 'read'], [id, 'read'], [id, 'read']])
 })

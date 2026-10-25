@@ -1,6 +1,7 @@
 // Current-team Bot selectors only; Session IDs never come from a remote request.
 import { createHash } from 'node:crypto'
 import { projectTextBotChatPart } from './team-remote-bot-chat.js'
+import { inventoryVisibleBotChatAttachments } from './team-remote-bot-chat-attachments.js'
 
 const SCHEMA = 'dsh-remote-bot-read/v1'
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
@@ -23,6 +24,18 @@ export function parseRemoteBotChatRead(value) {
       typeof value.logical_id !== 'string' || !LOGICAL_ID.test(value.logical_id) ||
       !Number.isSafeInteger(value.part) || value.part < 0 || value.part >= MAX_PARTS ||
       !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 32 * 1024 ||
+      (value.cursor !== undefined && (typeof value.cursor !== 'string' || !CURSOR.test(value.cursor)))) invalid()
+  return { logicalId: value.logical_id, part: value.part, limit: value.limit,
+    cursor: value.cursor }
+}
+
+export function parseRemoteBotChatAttachmentRead(value) {
+  if (!row(value) || !exact(value, ['schema_version', 'kind', 'logical_id', 'part', 'limit',
+    ...(Object.hasOwn(value, 'cursor') ? ['cursor'] : [])]) ||
+      value.schema_version !== SCHEMA || value.kind !== 'bot-chat-attachments' ||
+      typeof value.logical_id !== 'string' || !LOGICAL_ID.test(value.logical_id) ||
+      !Number.isSafeInteger(value.part) || value.part < 0 || value.part >= MAX_PARTS ||
+      !Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 100 ||
       (value.cursor !== undefined && (typeof value.cursor !== 'string' || !CURSOR.test(value.cursor)))) invalid()
   return { logicalId: value.logical_id, part: value.part, limit: value.limit,
     cursor: value.cursor }
@@ -72,6 +85,65 @@ function cursorOffset(value, revision, part, eventDigest, rowsDigest) {
   if (decoded.r !== revision || decoded.p !== part ||
       decoded.e !== eventDigest || decoded.d !== rowsDigest) stale()
   return decoded.o
+}
+
+function attachmentCursorOffset(value, revision, part, eventDigest, manifestDigest) {
+  if (value === undefined) return 0
+  let decoded
+  try {
+    const bytes = Buffer.from(value, 'base64url')
+    if (bytes.toString('base64url') !== value || bytes.length > 384) invalid()
+    decoded = JSON.parse(bytes.toString('utf8'))
+  } catch { invalid() }
+  if (!row(decoded) || !exact(decoded, ['r', 'p', 'e', 'm', 'o']) ||
+      !Number.isSafeInteger(decoded.r) || !Number.isSafeInteger(decoded.p) ||
+      typeof decoded.e !== 'string' || !DIGEST.test(decoded.e) ||
+      typeof decoded.m !== 'string' || !DIGEST.test(decoded.m) ||
+      !Number.isSafeInteger(decoded.o) || decoded.o < 0) invalid()
+  if (decoded.r !== revision || decoded.p !== part ||
+      decoded.e !== eventDigest || decoded.m !== manifestDigest) stale()
+  return decoded.o
+}
+
+/** Bounded visible attachment manifest; no byte or arbitrary Session selector is accepted. */
+export async function projectRemoteBotChatAttachments(state, request, readSession, now = Date.now) {
+  const { logicalId, part, limit, cursor } = parseRemoteBotChatAttachmentRead(request)
+  const ids = partsOf(state, logicalId)
+  if (part >= ids.length || typeof readSession !== 'function') invalid()
+  let source, manifest
+  try {
+    source = await readSession(ids[part])
+    manifest = inventoryVisibleBotChatAttachments(source.events, source.digest)
+  } catch (cause) {
+    if (cause?.message === 'Bot chat source changed') stale()
+    incomplete()
+  }
+  if (source.eventCount !== source.events.length) incomplete()
+  const offset = attachmentCursorOffset(cursor, state.revision, part,
+    manifest.eventDigest, manifest.manifestDigest)
+  if (offset > manifest.items.length || cursor !== undefined && offset === manifest.items.length) stale()
+  const confirmed = new Date(now()).toISOString()
+  const page = end => ({ logical_id: logicalId, part, part_count: ids.length,
+    team_revision: state.revision, event_digest: manifest.eventDigest,
+    manifest_digest: manifest.manifestDigest, items: manifest.items.slice(offset, end),
+    next_cursor: end < manifest.items.length ? Buffer.from(JSON.stringify({ r: state.revision,
+      p: part, e: manifest.eventDigest, m: manifest.manifestDigest, o: end })).toString('base64url') : null,
+    source: 'authority', last_confirmed_at: confirmed })
+  const fits = value => Buffer.byteLength(JSON.stringify(value), 'utf8') <= MAX_RESULT_BYTES
+  let end = Math.min(offset + limit, manifest.items.length)
+  let value = page(end)
+  if (!fits(value)) {
+    let lower = offset, upper = end
+    while (lower + 1 < upper) {
+      const middle = Math.floor((lower + upper) / 2)
+      if (fits(page(middle))) lower = middle
+      else upper = middle
+    }
+    if (lower === offset) invalid()
+    end = lower
+    value = page(end)
+  }
+  return value
 }
 
 export async function projectRemoteBotChat(state, request, readSession, now = Date.now) {

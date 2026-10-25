@@ -5,7 +5,7 @@ import { lstat, open, readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createGroupHistory } from './group-history.js'
 import { readBoundedSourceSession } from './team-import-source.js'
-import { projectRemoteBotChat } from './team-remote-bot-chat-page.js'
+import { projectRemoteBotChat, projectRemoteBotChatAttachments } from './team-remote-bot-chat-page.js'
 const SCHEMA = 'dsh-remote-bot-read/v1'
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,122}$/u
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u
@@ -252,6 +252,15 @@ export function install(rt) {
         const committed = JSON.parse(await readFile(rt.statePath, 'utf8'))
         signal?.throwIfAborted()
         const result = await projectRemoteBotChat(committed, request,
+          id => readBoundedSourceSession(rt.ctx, id))
+        signal?.throwIfAborted()
+        if (!rt.exclusiveWriter()) throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
+        return result
+      }
+      if (request?.kind === 'bot-chat-attachments') {
+        const committed = JSON.parse(await readFile(rt.statePath, 'utf8'))
+        signal?.throwIfAborted()
+        const result = await projectRemoteBotChatAttachments(committed, request,
           id => readBoundedSourceSession(rt.ctx, id))
         signal?.throwIfAborted()
         if (!rt.exclusiveWriter()) throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })

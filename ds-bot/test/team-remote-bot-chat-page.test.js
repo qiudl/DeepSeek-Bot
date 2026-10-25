@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
-import { parseRemoteBotChatRead, projectRemoteBotChat } from '../src/host/team-remote-bot-chat-page.js'
+import { parseRemoteBotChatRead, parseRemoteBotChatAttachmentRead,
+  projectRemoteBotChat, projectRemoteBotChatAttachments } from '../src/host/team-remote-bot-chat-page.js'
 
 const id = 'session-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const old = 'session-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
@@ -62,4 +63,41 @@ test('REQ-20261023-0001 rejects arbitrary Sessions and stale Bot chat cursors', 
     { code: 'bot/stale' })
   const alias = { ...team, rooms: { [old]: { id: old, sessions: {}, segments: {} } } }
   await assert.rejects(projectRemoteBotChat(alias, request, reader), { code: 'bot/invalid' })
+})
+
+test('REQ-20261023-0001 pages only visible attachment refs from a team-owned chat', async () => {
+  const ref = { attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png',
+    bytes: 12, width: 1, height: 1, name: 'photo.png' }
+  const mediaEvents = [
+    { seq: 0, type: 'system/message', data: { content: [{ type: 'image', attachment: ref }] } },
+    ...[1, 2, 3].map(seq => ({ seq, time: seq, type: 'user/message',
+      data: { source: { kind: 'user' }, content: [
+        { type: 'text', text: `photo ${seq}` }, { type: 'image', attachment: ref }] } })),
+  ]
+  const read = async () => ({ events: mediaEvents, eventCount: mediaEvents.length,
+    digest: digest(mediaEvents) })
+  const mediaRequest = { schema_version: request.schema_version, kind: 'bot-chat-attachments',
+    logical_id: request.logical_id, part: 1, limit: 2 }
+  const first = await projectRemoteBotChatAttachments(team, mediaRequest, read, () => 0)
+  assert.equal(first.part_count, 2)
+  assert.equal(first.items.length, 2)
+  assert.deepEqual(first.items.map(item => item.eventSeq), [1, 2])
+  assert.ok(Buffer.byteLength(JSON.stringify(first)) <= 60 * 1024)
+  const second = await projectRemoteBotChatAttachments(team,
+    { ...mediaRequest, cursor: first.next_cursor }, read, () => 0)
+  assert.deepEqual(second.items.map(item => item.eventSeq), [3])
+  assert.equal(second.next_cursor, null)
+  assert.equal(second.manifest_digest, first.manifest_digest)
+  assert.equal(JSON.stringify(first).includes('/private/'), false)
+  await assert.rejects(projectRemoteBotChatAttachments({ ...team, revision: 8 },
+    { ...mediaRequest, cursor: first.next_cursor }, read), { code: 'bot/stale' })
+  const changed = structuredClone(mediaEvents)
+  changed[2].data.content[0].text = 'changed'
+  await assert.rejects(projectRemoteBotChatAttachments(team,
+    { ...mediaRequest, cursor: first.next_cursor }, async () => ({ events: changed,
+      eventCount: changed.length, digest: digest(changed) })), { code: 'bot/stale' })
+  await assert.rejects(projectRemoteBotChatAttachments(team,
+    { ...mediaRequest, profile_id: 'other' }, read), { code: 'bot/invalid' })
+  assert.throws(() => parseRemoteBotChatAttachmentRead({ ...mediaRequest, limit: 101 }),
+    { code: 'bot/invalid' })
 })
