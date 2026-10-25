@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import { REPLY_KIND, SOURCE_KIND } from './constants.js'
 import { historyEntry } from './parts.js'
-import { inventorySessionAttachments } from './team-import-attachments.js'
+import { inventorySessionAttachments, readVerifiedSourceAttachment } from './team-import-attachments.js'
 
 const DIGEST = /^[0-9a-f]{64}$/u
 const MAX_EVENTS = 100_000
@@ -65,4 +65,18 @@ export function inventoryVisibleBotChatAttachments(events, expectedDigest) {
   const visible = items.filter(item => shown.has(item.eventSeq))
   return { eventDigest: expectedDigest, items: visible,
     manifestDigest: createHash('sha256').update(JSON.stringify(visible)).digest('hex') }
+}
+
+/** Only a visible position in a pinned Session manifest may read attachment bytes. */
+export async function* readVisibleBotChatAttachment(ctx, events, eventDigest,
+  manifestDigest, selector, signal) {
+  const manifest = inventoryVisibleBotChatAttachments(events, eventDigest)
+  if (manifest.manifestDigest !== manifestDigest || !object(selector) ||
+      Object.keys(selector).sort().join(',') !== 'blockIndex,eventSeq' ||
+      !Number.isSafeInteger(selector.eventSeq) || selector.eventSeq < 0 ||
+      !Number.isSafeInteger(selector.blockIndex) || selector.blockIndex < 0) invalid()
+  const item = manifest.items.find(entry => entry.eventSeq === selector.eventSeq &&
+    entry.blockIndex === selector.blockIndex)
+  if (!item) invalid()
+  yield* readVerifiedSourceAttachment(ctx, { type: item.type, ref: item.ref }, signal)
 }
