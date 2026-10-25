@@ -3,19 +3,29 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 const ATTACHMENT_ID = /^sha256:[0-9a-f]{64}$/u
 const MEDIA = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const TRANSFER_CHUNK = 32 * 1024
+const MAX_TRANSFER_BYTES = 512 * 1024 * 1024
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 function attachment(block) {
   const ref = block.attachment
+  const allowed = block.type === 'file'
+    ? ['attachmentId', 'name', 'bytes']
+    : ['attachmentId', 'mediaType', 'bytes', 'width', 'height', 'name', 'originalDimensions']
   if (!object(ref) || !ATTACHMENT_ID.test(ref.attachmentId ?? '') ||
       !Number.isSafeInteger(ref.bytes) || ref.bytes < 0 ||
+      Object.keys(ref).some(key => !allowed.includes(key)) ||
       ref.name !== undefined && (typeof ref.name !== 'string' || ref.name.includes('/') || ref.name.includes('\\') || ref.name.length > 255)) {
     throw new Error('Invalid attachment reference')
   }
   if (block.type === 'file') {
     if (typeof ref.name !== 'string' || ref.name === '') throw new Error('Invalid file attachment')
   } else if (!MEDIA.has(ref.mediaType) || !Number.isSafeInteger(ref.width) || ref.width < 1 ||
-      !Number.isSafeInteger(ref.height) || ref.height < 1) {
+      !Number.isSafeInteger(ref.height) || ref.height < 1 ||
+      ref.originalDimensions !== undefined && (!object(ref.originalDimensions) ||
+        Object.keys(ref.originalDimensions).sort().join(',') !== 'height,width' ||
+        !Number.isSafeInteger(ref.originalDimensions.width) || ref.originalDimensions.width < 1 ||
+        !Number.isSafeInteger(ref.originalDimensions.height) || ref.originalDimensions.height < 1)) {
     throw new Error('Invalid image attachment')
   }
   return { type: block.type, ref: structuredClone(ref) }
@@ -93,6 +103,45 @@ export async function verifySourceAttachments(ctx, items, signal) {
     verified.push({ type: item.type, attachmentId: ref.attachmentId, bytes })
   }
   return verified
+}
+
+/** Stream only a validated DSH attachment reference; consumers commit after EOF. */
+export async function* readVerifiedSourceAttachment(ctx, item, signal) {
+  const store = ctx?.attachments ?? ctx?.get?.('attachments')
+  if (!store || typeof store.readImage !== 'function' ||
+      typeof store.readFileStream !== 'function' ||
+      !object(item) || !['image', 'file'].includes(item.type)) {
+    throw new Error('Invalid source attachment reader')
+  }
+  const { ref } = attachment({ type: item.type, attachment: item.ref })
+  if (ref.bytes > MAX_TRANSFER_BYTES) throw new Error('Source attachment too large')
+  const hash = createHash('sha256')
+  let bytes = 0
+  const stream = item.type === 'image'
+    ? (async function* () {
+      const stored = await store.readImage(ref, signal)
+      if (!isDeepStrictEqual(stored?.ref, ref) || !(stored.data instanceof Uint8Array)) {
+        throw new Error('Image attachment changed')
+      }
+      yield stored.data
+    })()
+    : store.readFileStream(ref, signal)
+  for await (const block of stream) {
+    signal?.throwIfAborted()
+    if (!(block instanceof Uint8Array) || bytes + block.byteLength > ref.bytes) {
+      throw new Error('Source attachment bytes changed')
+    }
+    for (let offset = 0; offset < block.byteLength; offset += TRANSFER_CHUNK) {
+      const chunk = block.subarray(offset, Math.min(offset + TRANSFER_CHUNK, block.byteLength))
+      hash.update(chunk)
+      bytes += chunk.byteLength
+      yield chunk
+      signal?.throwIfAborted()
+    }
+  }
+  if (bytes !== ref.bytes || `sha256:${hash.digest('hex')}` !== ref.attachmentId) {
+    throw new Error('Source attachment bytes changed')
+  }
 }
 
 /** Save one verified transfer payload in the target Profile without exposing it to a Bot. */

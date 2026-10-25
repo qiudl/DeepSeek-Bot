@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
-import { inventorySessionAttachments, stageImportedAttachment, verifySourceAttachments } from '../src/host/team-import-attachments.js'
+import { inventorySessionAttachments, readVerifiedSourceAttachment, stageImportedAttachment, verifySourceAttachments } from '../src/host/team-import-attachments.js'
 
 const image = { attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png',
   bytes: 68, width: 1, height: 1, name: 'pixel.png' }
@@ -25,6 +25,9 @@ test('REQ-20261023-0001 rejects unknown, malformed and conflicting attachment re
   assert.throws(() => inventorySessionAttachments([{ data: { attachmentId: image.attachmentId } }]), /Unknown attachment/u)
   assert.throws(() => inventorySessionAttachments([{ data: { content: [
     { type: 'file', attachment: { ...file, name: '../private' } },
+  ] } }]), /Invalid attachment/u)
+  assert.throws(() => inventorySessionAttachments([{ data: { content: [
+    { type: 'file', attachment: { ...file, localPath: '/private/secret' } },
   ] } }]), /Invalid attachment/u)
   assert.throws(() => inventorySessionAttachments([{ data: { content: [
     { type: 'image', attachment: { ...image, width: 0 } },
@@ -54,6 +57,27 @@ test('REQ-20261023-0001 verifies image and streamed file bytes through DSH attac
   await assert.rejects(verifySourceAttachments({ attachments: {
     ...ctx.attachments, async *readFileStream() { yield fileBytes.subarray(0, 2) },
   } }, [{ type: 'file', ref: fileRef }]), /Attachment bytes changed/u)
+})
+
+test('REQ-20261023-0001 streams bounded source bytes and rejects truncation before completion', async () => {
+  const data = Buffer.alloc(70_000, 7)
+  const sourceRef = { ...file, bytes: data.length,
+    attachmentId: `sha256:${createHash('sha256').update(data).digest('hex')}` }
+  const ctx = { attachments: { readImage: async () => null,
+    async *readFileStream() { yield data } } }
+  const chunks = []
+  for await (const chunk of readVerifiedSourceAttachment(ctx, { type: 'file', ref: sourceRef })) {
+    assert.ok(chunk.byteLength <= 32 * 1024)
+    chunks.push(chunk)
+  }
+  assert.deepEqual(Buffer.concat(chunks), data)
+  const broken = { attachments: { ...ctx.attachments,
+    async *readFileStream() { yield data.subarray(0, data.length - 1) } } }
+  await assert.rejects(async () => {
+    for await (const chunk of readVerifiedSourceAttachment(broken, { type: 'file', ref: sourceRef })) {
+      void chunk
+    }
+  }, /Source attachment bytes changed/u)
 })
 
 test('REQ-20261023-0001 stages target attachment bytes and records the actual target reference', async () => {
