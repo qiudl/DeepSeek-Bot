@@ -21,7 +21,8 @@ function checkReferences(value, targetIds, sourceIds) {
 }
 
 /** Does not copy a Session header or change chat text; callers supply target cwd/preset separately. */
-export function remapSessionEvents(events, sourceId, plan, { active = false, attachments = [] } = {}) {
+export function remapSessionEvents(events, sourceId, plan,
+  { active = false, attachments = [], targetSystemMessage } = {}) {
   if (!Array.isArray(events) || events.length > 1_000_000 || !object(plan?.sessions) ||
       !SESSION_ID.test(sourceId) || !SESSION_ID.test(plan.sessions[sourceId] ?? '')) {
     throw new Error('Invalid Session seed')
@@ -42,10 +43,28 @@ export function remapSessionEvents(events, sourceId, plan, { active = false, att
     }
   }
   let firstAppend
+  let systemMessages = 0
   mapped.forEach((event, index) => {
     if (!object(event) || !Number.isSafeInteger(event.seq) || event.seq !== index ||
         typeof event.type !== 'string' || !Number.isFinite(event.time)) throw new Error('Invalid Session event sequence')
     if (firstAppend === undefined && event.surfaceOp === 'append') firstAppend = event.type
+    if (event.type === 'system/message') {
+      systemMessages++
+      if (!object(event.data) || !object(event.data.message) ||
+          Object.keys(event.data).some(key => !['turn', 'step', 'message'].includes(key)) ||
+          !object(targetSystemMessage) || targetSystemMessage.role !== 'system' ||
+          typeof targetSystemMessage.id !== 'string' || targetSystemMessage.id.length === 0 ||
+          !object(targetSystemMessage.source) || targetSystemMessage.source.kind !== 'system-prompt' ||
+          !Array.isArray(targetSystemMessage.content) ||
+          targetSystemMessage.content.some(block => block?.type !== 'text' || typeof block.text !== 'string') ||
+          !targetSystemMessage.content.some(block => block?.type === 'text' &&
+            typeof block.text === 'string' && block.text.length > 0) ||
+          JSON.stringify(event.data.message.content) === JSON.stringify(targetSystemMessage.content) ||
+          Buffer.byteLength(JSON.stringify(targetSystemMessage), 'utf8') > 64_000) {
+        throw new Error('Target-generated system prompt required')
+      }
+      event.data = { ...event.data, message: structuredClone(targetSystemMessage) }
+    }
     if (event.type === 'session-log-deepseek/delivery-accepted') {
       if (event.data?.sessionId !== sourceId) throw new Error('Wrong delivery Session')
       event.data.sessionId = session(sourceId)
@@ -57,6 +76,7 @@ export function remapSessionEvents(events, sourceId, plan, { active = false, att
     }
     checkReferences(event, targetIds, sourceIds)
   })
+  if (systemMessages > 1) throw new Error('Multiple source system prompts need review')
   if (active && firstAppend !== 'system/message') throw new Error('Active history needs a protected system message')
   return remapSessionAttachments(mapped, attachments)
 }
