@@ -25,8 +25,11 @@ function checkContent(event) {
   if (!visible) return
   if (!Array.isArray(visible.content)) unsupported()
   for (const block of visible.content) {
-    if (!row(block) || block.type !== 'text' && !(visible.tools && block.type === 'tool-call') ||
-        block.type === 'text' && typeof block.text !== 'string') unsupported()
+    if (!row(block)) unsupported()
+    if (block.type === 'text' && typeof block.text === 'string') continue
+    // DSH stores assistant reasoning in the Session, but the chat UI never shows it.
+    if (visible.tools && (block.type === 'tool-call' || block.type === 'reasoning')) continue
+    unsupported()
   }
 }
 

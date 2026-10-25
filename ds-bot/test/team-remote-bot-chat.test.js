@@ -10,6 +10,7 @@ const events = [
   at(0, 'system/message', { cwd: '/private/secret-workspace', apiKey: 'hidden-key' }),
   at(1, 'user/message', { source: { kind: 'user' }, content: text('Hi') }),
   at(2, 'assistant/message', { message: { content: [...text('Hello'),
+    { type: 'reasoning', text: 'private chain of thought' },
     { type: 'tool-call', id: 'call-1', name: 'read_file', arguments: '/private/secret-workspace' }] } }),
   at(3, 'tool/result', { content: text('hidden tool secret') }),
   at(4, 'user/message', { source: { kind: 'bot', role: 'kickoff' }, content: text('setup') }),
@@ -34,6 +35,7 @@ test('REQ-20261023-0001 projects only visible private chat text bound to source 
       { seq: 7, time: events[7].time, who: 'you', text: 'Good' },
     ]) })
   assert.equal(JSON.stringify(projected).includes('hidden'), false)
+  assert.equal(JSON.stringify(projected).includes('private chain of thought'), false)
   assert.equal(JSON.stringify(projected).includes('/private/secret-workspace'), false)
 })
 
