@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const DIGEST = /^[0-9a-f]{64}$/u
+const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 
 function validId(id) {
   if (typeof id !== 'string' || !SESSION_ID.test(id)) throw new Error('Invalid import Session ID')
@@ -40,14 +41,17 @@ export function createTeamImportJournal(root) {
       validId(record?.sourceId)
       const path = pathFor(record?.targetId)
       if (!['active', 'history'].includes(record?.mode) ||
-          !['eventDigest', 'sourceDigest', 'targetDigest'].every(key => DIGEST.test(record[key] ?? ''))) {
+          !['eventDigest', 'sourceDigest', 'targetDigest'].every(key => DIGEST.test(record[key] ?? '')) ||
+          (record.systemMessageId !== undefined && !MESSAGE_ID.test(record.systemMessageId)) ||
+          (record.mode === 'active' && record.systemMessageId === undefined)) {
         throw new Error('Invalid import digest')
       }
       await mkdir(root, { recursive: true, mode: 0o700 })
       try {
         await writeSynced(path, { version: 1, status: 'pending',
           sourceId: record.sourceId, targetId: record.targetId, mode: record.mode,
-          eventDigest: record.eventDigest, sourceDigest: record.sourceDigest, targetDigest: record.targetDigest }, true)
+          eventDigest: record.eventDigest, sourceDigest: record.sourceDigest, targetDigest: record.targetDigest,
+          ...(record.systemMessageId === undefined ? {} : { systemMessageId: record.systemMessageId }) }, true)
       } catch (error) {
         if (error.code === 'EEXIST') throw new Error('Import Session already reserved')
         throw error

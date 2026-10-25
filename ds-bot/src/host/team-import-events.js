@@ -1,6 +1,7 @@
 // Rewrite only structural Session references in a decoded DSH event seed.
 import { remapSessionAttachments } from './team-import-attachments.js'
 const SESSION_ID = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
+const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 const REFERENCE_KEY = /(?:session|room|bot)id$/iu
 const TEXT_KEY = new Set(['text', 'content', 'arguments', 'title', 'name', 'note'])
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -53,13 +54,11 @@ export function remapSessionEvents(events, sourceId, plan,
       if (!object(event.data) || !object(event.data.message) ||
           Object.keys(event.data).some(key => !['turn', 'step', 'message'].includes(key)) ||
           !object(targetSystemMessage) || targetSystemMessage.role !== 'system' ||
-          typeof targetSystemMessage.id !== 'string' || targetSystemMessage.id.length === 0 ||
+          !MESSAGE_ID.test(targetSystemMessage.id ?? '') ||
           !object(targetSystemMessage.source) || targetSystemMessage.source.kind !== 'system-prompt' ||
-          !Array.isArray(targetSystemMessage.content) ||
-          targetSystemMessage.content.some(block => block?.type !== 'text' || typeof block.text !== 'string') ||
-          !targetSystemMessage.content.some(block => block?.type === 'text' &&
-            typeof block.text === 'string' && block.text.length > 0) ||
-          JSON.stringify(event.data.message.content) === JSON.stringify(targetSystemMessage.content) ||
+          Object.keys(targetSystemMessage.source).length !== 1 ||
+          Object.keys(targetSystemMessage).some(key => !['id', 'role', 'source', 'content'].includes(key)) ||
+          !Array.isArray(targetSystemMessage.content) || targetSystemMessage.content.length !== 0 ||
           Buffer.byteLength(JSON.stringify(targetSystemMessage), 'utf8') > 64_000) {
         throw new Error('Target-generated system prompt required')
       }

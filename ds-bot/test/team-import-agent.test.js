@@ -14,17 +14,18 @@ const targetId = 'session-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
 const plan = { sessions: { [sourceId]: targetId } }
 const events = [{ seq: 0, type: 'system/message', time: 1, surfaceOp: 'append',
   data: { turn: 1, step: 1, message: createSystemMessage('Source prompt') } }]
-const targetSystemMessage = createSystemMessage('Target prompt')
+const targetSystemMessage = createSystemMessage('')
 const historicalEvents = [{ seq: 0, type: 'session-log-deepseek/delivery-accepted', time: 1,
   data: { sessionId: sourceId } }]
 
 function fixture({ failAt } = {}) {
   const calls = []
   let seeded = []
+  let reserved
   const session = { id: targetId, snapshotEvents: () => [...seeded, { seq: seeded.length, type: 'session/end-seed' }] }
   const workspace = { path: '/target/team', attachSession: async id => { calls.push(`attach:${id}`); if (failAt === 'attach') throw new Error('attach failed') } }
   const journal = {
-    reserve: async record => { calls.push(`reserve:${record.targetId}`); if (failAt === 'reserve') throw new Error('pending import') },
+    reserve: async record => { reserved = record; calls.push(`reserve:${record.targetId}`); if (failAt === 'reserve') throw new Error('pending import') },
     complete: async id => { calls.push(`complete:${id}`) },
     fail: async id => { calls.push(`fail:${id}`) },
   }
@@ -38,14 +39,16 @@ function fixture({ failAt } = {}) {
     } },
     sessions: { flush: async value => { assert.equal(value, session); calls.push('flush') } },
   }
-  return { ctx, workspace, journal, calls }
+  return { ctx, workspace, journal, calls, seed: () => seeded, reservation: () => reserved }
 }
 
 test('REQ-20261023-0001 stages a seeded Agent only after durable reservation', async () => {
-  const { ctx, workspace, journal, calls } = fixture()
+  const { ctx, workspace, journal, calls, seed, reservation } = fixture()
   const result = await stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: '灭霸Thanos',
-    model: { provider: 'mock', model: 'mock' }, targetSystemMessage, journal })
+    model: { provider: 'mock', model: 'mock' }, journal })
   assert.equal(result, targetId)
+  assert.deepEqual(seed()[0].data.message.content, [])
+  assert.equal(seed()[0].data.message.id, reservation().systemMessageId)
   assert.deepEqual(calls, [
     `reserve:${targetId}`, `create:${targetId}`, 'preset:standard', `attach:${targetId}`,
     'title:灭霸Thanos', 'model:mock/mock', 'flush', `complete:${targetId}`,
@@ -81,14 +84,14 @@ test('REQ-20261023-0001 historical staging rejects an explicit model binding', a
 test('REQ-20261023-0001 stops before creating a Session when reservation fails', async () => {
   const { ctx, workspace, journal, calls } = fixture({ failAt: 'reserve' })
   await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: 'Bot',
-    model: { provider: 'mock', model: 'mock' }, targetSystemMessage, journal }), /pending import/u)
+    model: { provider: 'mock', model: 'mock' }, journal }), /pending import/u)
   assert.deepEqual(calls, [`reserve:${targetId}`])
 })
 
 test('REQ-20261023-0001 records a failed partial stage for explicit recovery', async () => {
   const { ctx, workspace, journal, calls } = fixture({ failAt: 'attach' })
   await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: 'Bot',
-    model: { provider: 'mock', model: 'mock' }, targetSystemMessage, journal }), /attach failed/u)
+    model: { provider: 'mock', model: 'mock' }, journal }), /attach failed/u)
   assert.deepEqual(calls.slice(-2), [`attach:${targetId}`, `fail:${targetId}`])
   assert.equal(calls.some(call => call.startsWith('complete:')), false)
 })
@@ -96,7 +99,7 @@ test('REQ-20261023-0001 records a failed partial stage for explicit recovery', a
 test('REQ-20261023-0001 unavailable target model leaves an Agent stage for review', async () => {
   const { ctx, workspace, journal, calls } = fixture({ failAt: 'model' })
   await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: 'Bot',
-    model: { provider: 'mock', model: 'mock' }, targetSystemMessage, journal }), /model unavailable/u)
+    model: { provider: 'mock', model: 'mock' }, journal }), /model unavailable/u)
   assert.deepEqual(calls.slice(-2), ['model:mock/mock', `fail:${targetId}`])
   assert.equal(calls.some(call => call.startsWith('complete:')), false)
 })
@@ -108,7 +111,7 @@ test('REQ-20261023-0001 keeps a completed Agent stage idempotent across restarts
     const journal = createTeamImportJournal(root)
     const withDigests = { ...plan, sourceDigest: 'a'.repeat(64), targetDigest: 'b'.repeat(64) }
     const options = { sourceId, plan: withDigests, events, workspace, title: 'Bot',
-      model: { provider: 'mock', model: 'mock' }, targetSystemMessage, journal }
+      model: { provider: 'mock', model: 'mock' }, journal }
     await stageImportedAgent(ctx, options)
     const firstCalls = calls.length
     assert.equal((await journal.read(targetId)).status, 'staged')
@@ -121,7 +124,8 @@ test('REQ-20261023-0001 reopens staged history and checks its persisted seed pre
   const { ctx } = fixture()
   const mapped = remapSessionEvents(events, sourceId, plan, { active: true, targetSystemMessage })
   const eventDigest = createHash('sha256').update(JSON.stringify(mapped)).digest('hex')
-  const input = { sourceId, plan, events, mode: 'active', eventDigest, targetSystemMessage }
+  const input = { sourceId, plan, events, mode: 'active', eventDigest,
+    systemMessageId: targetSystemMessage.id }
   ctx.sessionController.resolveAgent = async () => ({ agent: { session: {
     id: targetId, snapshotEvents: () => [...mapped, { seq: 1, type: 'session/end-seed' }],
   } } })
@@ -135,9 +139,9 @@ test('REQ-20261023-0001 reopens staged history and checks its persisted seed pre
   await assert.rejects(verifyImportedAgent(ctx, input), /unavailable/u)
 })
 
-test('REQ-20261023-0001 refuses to stage source system prompts without target settings', async () => {
-  const { ctx, workspace, journal, calls } = fixture()
-  await assert.rejects(stageImportedAgent(ctx, { sourceId, plan, events, workspace, title: 'Bot',
-    model: { provider: 'mock', model: 'mock' }, journal }), /Target-generated system prompt required/u)
-  assert.deepEqual(calls, [])
+test('REQ-20261023-0001 refuses verification without the journaled local system identity', async () => {
+  const { ctx } = fixture()
+  ctx.sessionController.resolveAgent = async () => { throw new Error('must not reopen') }
+  await assert.rejects(verifyImportedAgent(ctx, { sourceId, plan, events, mode: 'active',
+    eventDigest: '0'.repeat(64) }), /Target-generated system prompt required/u)
 })

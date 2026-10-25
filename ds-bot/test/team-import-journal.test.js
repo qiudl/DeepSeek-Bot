@@ -7,7 +7,7 @@ import { createTeamImportJournal } from '../src/host/team-import-journal.js'
 
 const sourceId = 'session-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const targetId = 'session-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
-const reservation = { sourceId, targetId, mode: 'active', eventDigest: 'a'.repeat(64), sourceDigest: 'b'.repeat(64), targetDigest: 'c'.repeat(64) }
+const reservation = { sourceId, targetId, mode: 'active', eventDigest: 'a'.repeat(64), sourceDigest: 'b'.repeat(64), targetDigest: 'c'.repeat(64), systemMessageId: '11111111-1111-4111-8111-111111111111' }
 
 test('REQ-20261023-0001 persists a private reservation and blocks repeated creation across instances', async () => {
   const root = await mkdtemp(join(tmpdir(), 'ds-bot-import-journal-'))

@@ -17,7 +17,7 @@ const events = [
     data: { inserted: [{ source: { senderSessionId: sender, roomId: room } }] } },
   { type: 'session-log-deepseek/delivery-accepted', seq: 3, time: 4, data: { sessionId: own, throughSeq: 2 } },
 ]
-const targetSystemMessage = createSystemMessage('Target prompt')
+const targetSystemMessage = createSystemMessage('')
 
 test('REQ-20261023-0001 remaps structural history references and preserves quoted chat text', () => {
   const original = structuredClone(events)
@@ -71,5 +71,11 @@ test('REQ-20261023-0001 rejects imported system prompts without a target replace
   }), /Target-generated system prompt required/u)
   assert.throws(() => remapSessionEvents(events, own, plan, {
     active: true, targetSystemMessage: createSystemMessage('Source prompt'),
+  }), /Target-generated system prompt required/u)
+  assert.throws(() => remapSessionEvents(events, own, plan, {
+    active: true, targetSystemMessage: createSystemMessage('Target prompt'),
+  }), /Target-generated system prompt required/u)
+  assert.throws(() => remapSessionEvents(events, own, plan, {
+    active: true, targetSystemMessage: { ...targetSystemMessage, legacyText: 'Source prompt' },
   }), /Target-generated system prompt required/u)
 })

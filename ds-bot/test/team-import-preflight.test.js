@@ -33,7 +33,8 @@ async function fixture() {
   const journal = createTeamImportJournal(join(root, 'journal'))
   for (const [sourceId, targetId] of Object.entries(plan.sessions)) {
     await journal.reserve({ sourceId, targetId, mode: sourceId === current ? 'active' : 'history',
-      eventDigest: 'e'.repeat(64), sourceDigest: plan.sourceDigest, targetDigest: plan.targetDigest })
+      eventDigest: 'e'.repeat(64), sourceDigest: plan.sourceDigest, targetDigest: plan.targetDigest,
+      ...(sourceId === current ? { systemMessageId: '11111111-1111-4111-8111-111111111111' } : {}) })
     await journal.complete(targetId)
   }
   const manifest = await inventoryTeamMemory(sourceMemoryRoot, source, plan)
@@ -53,6 +54,8 @@ test('REQ-20261023-0001 checks every planned Session and staged memory before ac
     } })
     assert.deepEqual(result, { sessions: 3, memoryFiles: 1 })
     assert.deepEqual(observed.filter(item => item.mode === 'active').map(item => item.sourceId), [current])
+    assert.equal(observed.find(item => item.mode === 'active').systemMessageId,
+      '11111111-1111-4111-8111-111111111111')
     assert.equal(observed.filter(item => item.mode === 'history').length, 2)
   } finally { await rm(data.root, { recursive: true, force: true }) }
 })
@@ -63,6 +66,11 @@ test('REQ-20261023-0001 refuses stale state, incomplete Sessions and changed sta
     await assert.rejects(verifyTeamImportStage({ ...data, target: { ...data.target, revision: 6 } }), /Target team changed/u)
     await assert.rejects(verifyTeamImportStage({ ...data, candidate: { ...data.candidate, mainBotIds: [chief] } }), /Team candidate changed/u)
     await assert.rejects(verifyTeamImportStage({ ...data, verifySession: async () => false }), /Session verification failed/u)
+    await assert.rejects(verifyTeamImportStage({ ...data, journal: { read: async id => {
+      const record = await data.journal.read(id)
+      if (record.mode === 'active') delete record.systemMessageId
+      return record
+    } } }), /Session stage incomplete/u)
     const targetId = data.plan.sessions[old]
     await assert.rejects(verifyTeamImportStage({ ...data, journal: { read: async id => ({
       ...await data.journal.read(id), ...(id === targetId ? { status: 'needs-review' } : {}),

@@ -49,10 +49,12 @@ export async function verifyTeamImportStage({ source, target, plan, candidate, m
     if (record?.version !== 1 || record.status !== 'staged' ||
         record.sourceId !== sourceId || record.targetId !== targetId || record.mode !== mode ||
         record.sourceDigest !== plan.sourceDigest || record.targetDigest !== plan.targetDigest ||
+        (mode === 'active' && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(record.systemMessageId ?? '')) ||
         !/^[0-9a-f]{64}$/u.test(record.eventDigest)) {
       throw new Error('Import Session stage incomplete')
     }
-    if (await verifySession({ sourceId, targetId, mode, eventDigest: record.eventDigest }) !== true) {
+    if (await verifySession({ sourceId, targetId, mode, eventDigest: record.eventDigest,
+      ...(record.systemMessageId === undefined ? {} : { systemMessageId: record.systemMessageId }) }) !== true) {
       throw new Error('Import Session verification failed')
     }
   }
