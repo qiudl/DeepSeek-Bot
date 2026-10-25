@@ -215,3 +215,44 @@ test('REQ-20261023-0001 remote group service reads committed state, not unsaved 
   assert.equal(page.seq, 1)
   assert.match(Buffer.from(page.content_base64, 'base64').toString(), /committed/u)
 })
+
+test('REQ-20261023-0001 private Bot chat service uses committed team and read-only Session handle', async t => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-chat-'))
+  const ctx = fakeContext()
+  const id = 'session-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+  const events = [{ seq: 0, type: 'system/message', data: { cwd: '/private/source' } },
+    { seq: 1, time: 1, type: 'user/message', data: { source: { kind: 'user' },
+      content: [{ type: 'text', text: 'hi' }] } }]
+  const opened = []
+  let revokeDuringRead = false
+  ctx.sessionPersistence = {
+    stat: async session => ({ header: { id: session }, revision: 'r1',
+      eventCount: events.length, sizeBytes: 100 }),
+    open: async (session, access) => {
+      opened.push([session, access])
+      return { id: session, access, header: { id: session },
+        read: async () => {
+          if (revokeDuringRead) writeFileSync(join(home, 'import-activation.pending.json'), '{}')
+          return { events }
+        }, close: async () => {} }
+    },
+  }
+  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  t.after(async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true }) })
+  await rt.load()
+  rt.state.bots[id] = { id, name: 'Thanos', role: 'Main' }
+  rt.state.mainBotIds = [id]
+  await rt.save()
+  const service = ctx.get('dsBotSlarkRemoteRead')
+  const request = { schema_version: 'dsh-remote-bot-read/v1', kind: 'bot-chat',
+    logical_id: `bot:${id}`, part: 0, limit: 1024 }
+  const page = await service.read(request)
+  assert.deepEqual(opened, [[id, 'read']])
+  assert.equal(page.part_count, 1)
+  assert.equal(Buffer.from(page.content_base64, 'base64').toString().includes('/private/source'), false)
+  revokeDuringRead = true
+  await assert.rejects(service.read(request), { code: 'bot/read-only' })
+  assert.deepEqual(opened, [[id, 'read'], [id, 'read']])
+  await assert.rejects(service.read(request), { code: 'bot/read-only' })
+  assert.deepEqual(opened, [[id, 'read'], [id, 'read']])
+})

@@ -9,8 +9,15 @@ const MAX_BYTES = 64_000_000
 export async function readTeamImportSourceSession(ctx, id, plan) {
   if (typeof id !== 'string' || !SESSION_ID.test(id) ||
       !plan?.sessions || !Object.hasOwn(plan.sessions, id) ||
-      typeof plan.sessions[id] !== 'string' || !SESSION_ID.test(plan.sessions[id]) ||
-      !ctx?.sessionPersistence ||
+      typeof plan.sessions[id] !== 'string' || !SESSION_ID.test(plan.sessions[id])) {
+    throw new Error('Invalid source Session reader')
+  }
+  return readBoundedSourceSession(ctx, id)
+}
+
+/** Internal reader: callers must authorize the Session from current team state first. */
+export async function readBoundedSourceSession(ctx, id) {
+  if (typeof id !== 'string' || !SESSION_ID.test(id) || !ctx?.sessionPersistence ||
       !['stat', 'open'].every(method => typeof ctx.sessionPersistence[method] === 'function')) {
     throw new Error('Invalid source Session reader')
   }
