@@ -294,11 +294,12 @@ test('REQ-20261023-0001 Profile service streams only a pinned visible Bot attach
   const service = ctx.get('dsBotSlarkRemoteRead')
   const manifest = await service.read({ schema_version: 'dsh-remote-bot-read/v1',
     kind: 'bot-chat-attachments', logical_id: `bot:${id}`, part: 0, limit: 100 })
-  const opened = await service.read({ schema_version: 'dsh-remote-bot-attachment/v1', kind: 'open',
+  const openAttachment = { schema_version: 'dsh-remote-bot-attachment/v1', kind: 'open',
     logical_id: `bot:${id}`, part: 0, team_revision: manifest.team_revision,
     event_digest: manifest.event_digest, manifest_digest: manifest.manifest_digest,
-    eventSeq: 1, blockIndex: 0 })
-  const page = await service.read({ schema_version: 'dsh-remote-bot-attachment/v1',
+    eventSeq: 1, blockIndex: 0 }
+  const opened = await service.read(openAttachment)
+  const page = await service.read({ ...openAttachment,
     kind: 'next', transfer_id: opened.transfer_id, offset: 0 })
   assert.equal(page.final, true)
   assert.deepEqual(Buffer.from(page.chunk_base64, 'base64'), bytes)

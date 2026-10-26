@@ -43,7 +43,7 @@ test('REQ-20261023-0001 reads one pinned attachment sequentially and verifies EO
   const received = []
   let offset = 0, final = false
   while (!final) {
-    const page = await f.transfers.read({ schema_version: open.schema_version, kind: 'next',
+    const page = await f.transfers.read({ ...open, kind: 'next',
       transfer_id: descriptor.transfer_id, offset }, signal())
     const chunk = Buffer.from(page.chunk_base64, 'base64')
     assert.equal(page.offset, offset)
@@ -55,7 +55,7 @@ test('REQ-20261023-0001 reads one pinned attachment sequentially and verifies EO
   assert.deepEqual(Buffer.concat(received), bytes)
   assert.equal(offset, bytes.length)
   assert.equal(f.transfers.activeCount(), 0)
-  await assert.rejects(f.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await assert.rejects(f.transfers.read({ ...open, kind: 'next',
     transfer_id: descriptor.transfer_id, offset }, signal()), { code: 'bot/invalid' })
 })
 
@@ -66,31 +66,31 @@ test('REQ-20261023-0001 refuses stale, hidden, corrupted and revoked source byte
   assert.throws(() => parseRemoteBotChatAttachmentTransferRequest({ ...open, session_id: sessionId }),
     { code: 'bot/invalid' })
   const descriptor = await f.transfers.read(open, signal())
-  await f.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await f.transfers.read({ ...open, kind: 'next',
     transfer_id: descriptor.transfer_id, offset: 0 }, signal())
   f.revoke()
-  await assert.rejects(f.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await assert.rejects(f.transfers.read({ ...open, kind: 'next',
     transfer_id: descriptor.transfer_id, offset: 32 * 1024 }, signal()), { code: 'bot/stale' })
   assert.equal(f.transfers.activeCount(), 0)
   const corrupted = Buffer.from(bytes)
   corrupted[1] ^= 1
   const g = fixture([corrupted])
   const opened = await g.transfers.read(open, signal())
-  await g.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await g.transfers.read({ ...open, kind: 'next',
     transfer_id: opened.transfer_id, offset: 0 }, signal())
-  await g.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await g.transfers.read({ ...open, kind: 'next',
     transfer_id: opened.transfer_id, offset: 32 * 1024 }, signal())
-  await assert.rejects(g.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await assert.rejects(g.transfers.read({ ...open, kind: 'next',
     transfer_id: opened.transfer_id, offset: 64 * 1024 }, signal()), /changed/u)
   assert.equal(g.transfers.activeCount(), 0)
   const h = fixture()
   const openedH = await h.transfers.read(open, signal())
   h.change()
-  await h.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await h.transfers.read({ ...open, kind: 'next',
     transfer_id: openedH.transfer_id, offset: 0 }, signal())
-  await h.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await h.transfers.read({ ...open, kind: 'next',
     transfer_id: openedH.transfer_id, offset: 32 * 1024 }, signal())
-  await assert.rejects(h.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await assert.rejects(h.transfers.read({ ...open, kind: 'next',
     transfer_id: openedH.transfer_id, offset: 64 * 1024 }, signal()), { code: 'bot/stale' })
   assert.equal(h.transfers.activeCount(), 0)
 })
@@ -100,9 +100,22 @@ test('REQ-20261023-0001 cancellation closes the pinned source iterator', async (
   const descriptor = await f.transfers.read(open, signal())
   const cancelled = new AbortController()
   cancelled.abort()
-  await assert.rejects(f.transfers.read({ schema_version: open.schema_version, kind: 'next',
+  await assert.rejects(f.transfers.read({ ...open, kind: 'next',
     transfer_id: descriptor.transfer_id, offset: 0 }, cancelled.signal))
   assert.equal(f.transfers.activeCount(), 0)
+})
+
+test('REQ-20261023-0001 pins subsequent requests to the opened attachment scope', async () => {
+  const f = fixture()
+  const descriptor = await f.transfers.read(open, signal())
+  const next = { ...open, kind: 'next', transfer_id: descriptor.transfer_id, offset: 0 }
+  await assert.rejects(f.transfers.read({ ...next, manifest_digest: '0'.repeat(64) }, signal()),
+    { code: 'bot/invalid' })
+  await assert.rejects(f.transfers.read({ ...open, kind: 'close', transfer_id: descriptor.transfer_id,
+    logical_id: 'bot:other' }), { code: 'bot/invalid' })
+  assert.equal(f.transfers.activeCount(), 1)
+  await f.transfers.read(next, signal())
+  await f.transfers.closeAll()
 })
 
 test('REQ-20261023-0001 copies the final buffer before verifying stream EOF', async () => {
@@ -114,7 +127,7 @@ test('REQ-20261023-0001 copies the final buffer before verifying stream EOF', as
     select: async () => selected, current: async () => true, confirm: async () => true,
     stream: async function* () { yield shared; shared[0] = 9 } })
   const descriptor = await transfers.read(open, signal())
-  const page = await transfers.read({ schema_version: open.schema_version, kind: 'next',
+  const page = await transfers.read({ ...open, kind: 'next',
     transfer_id: descriptor.transfer_id, offset: 0 }, signal())
   assert.equal(page.final, true)
   assert.equal(Buffer.from(page.chunk_base64, 'base64')[0], 7)
@@ -130,12 +143,10 @@ test('REQ-20261023-0001 limits active streams and retires idle transfers', async
   const one = await transfers.read(open, signal())
   const two = await transfers.read(open, signal())
   await assert.rejects(transfers.read(open, signal()), { code: 'bot/busy' })
-  assert.deepEqual(await transfers.read({ schema_version: open.schema_version,
-    kind: 'close', transfer_id: one.transfer_id }), { closed: true })
+  assert.deepEqual(await transfers.read({ ...open, kind: 'close', transfer_id: one.transfer_id }), { closed: true })
   const three = await transfers.read(open, signal())
   clock = 60_001
-  await assert.rejects(transfers.read({ schema_version: open.schema_version,
-    kind: 'next', transfer_id: three.transfer_id, offset: 0 }, signal()), { code: 'bot/invalid' })
+  await assert.rejects(transfers.read({ ...open, kind: 'next', transfer_id: three.transfer_id, offset: 0 }, signal()), { code: 'bot/invalid' })
   assert.equal(transfers.activeCount(), 1)
   await transfers.closeAll()
   assert.equal(transfers.activeCount(), 0)
@@ -151,7 +162,7 @@ test('REQ-20261023-0001 empty files complete at EOF', async () => {
     select: async () => selected, current: async () => true, confirm: async () => true,
     stream: async function* () {} })
   const descriptor = await transfers.read(open, signal())
-  const page = await transfers.read({ schema_version: open.schema_version, kind: 'next',
+  const page = await transfers.read({ ...open, kind: 'next',
     transfer_id: descriptor.transfer_id, offset: 0 }, signal())
   assert.equal(page.final, true)
   assert.equal(page.chunk_base64, '')

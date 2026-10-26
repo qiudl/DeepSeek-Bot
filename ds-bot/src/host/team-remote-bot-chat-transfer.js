@@ -8,6 +8,8 @@ const DIGEST = /^[0-9a-f]{64}$/u
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const MAX_ACTIVE = 2
 const IDLE_MS = 60_000
+const SCOPE_KEYS = ['logical_id', 'part', 'team_revision', 'event_digest',
+  'manifest_digest', 'eventSeq', 'blockIndex']
 const row = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const exact = (value, keys) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
 const error = (code, message) => Object.assign(new Error(message), { code })
@@ -16,25 +18,24 @@ const stale = () => { throw error('bot/stale', 'Bot attachment transfer source c
 
 export function parseRemoteBotChatAttachmentTransferRequest(value) {
   if (!row(value) || value.schema_version !== SCHEMA) invalid()
-  if (value.kind === 'open') {
-    if (!exact(value, ['schema_version', 'kind', 'logical_id', 'part', 'team_revision',
-      'event_digest', 'manifest_digest', 'eventSeq', 'blockIndex']) ||
-        typeof value.logical_id !== 'string' || !BOT.test(value.logical_id) ||
+  const keys = ['schema_version', 'kind', ...SCOPE_KEYS,
+    ...(value.kind === 'next' || value.kind === 'close' ? ['transfer_id'] : []),
+    ...(value.kind === 'next' ? ['offset'] : [])]
+  if (!['open', 'next', 'close'].includes(value.kind) || !exact(value, keys) ||
+      typeof value.logical_id !== 'string' || !BOT.test(value.logical_id) ||
         !Number.isSafeInteger(value.part) || value.part < 0 || value.part >= 10_000 ||
         !Number.isSafeInteger(value.team_revision) || value.team_revision < 0 ||
         typeof value.event_digest !== 'string' || !DIGEST.test(value.event_digest) ||
         typeof value.manifest_digest !== 'string' || !DIGEST.test(value.manifest_digest) ||
         !Number.isSafeInteger(value.eventSeq) || value.eventSeq < 0 ||
-        !Number.isSafeInteger(value.blockIndex) || value.blockIndex < 0) invalid()
-    return value
-  }
-  if (value.kind === 'next' && exact(value, ['schema_version', 'kind', 'transfer_id', 'offset']) &&
-      typeof value.transfer_id === 'string' && UUID.test(value.transfer_id) &&
-      Number.isSafeInteger(value.offset) && value.offset >= 0) return value
-  if (value.kind === 'close' && exact(value, ['schema_version', 'kind', 'transfer_id']) &&
-      typeof value.transfer_id === 'string' && UUID.test(value.transfer_id)) return value
-  invalid()
+        !Number.isSafeInteger(value.blockIndex) || value.blockIndex < 0 ||
+      (value.kind === 'next' || value.kind === 'close') &&
+      (typeof value.transfer_id !== 'string' || !UUID.test(value.transfer_id)) ||
+      value.kind === 'next' && (!Number.isSafeInteger(value.offset) || value.offset < 0)) invalid()
+  return value
 }
+
+const sameScope = (left, right) => SCOPE_KEYS.every(key => left[key] === right[key])
 
 /** Hold at most two native attachment iterators; EOF is the only successful completion. */
 export function createRemoteBotChatAttachmentTransfers({ select, current, confirm, ctx,
@@ -60,8 +61,16 @@ export function createRemoteBotChatAttachmentTransfers({ select, current, confir
     closeAll: async () => { await Promise.all([...active.keys()].map(close)) },
     async read(raw, signal) {
       const request = parseRemoteBotChatAttachmentTransferRequest(raw)
-      if (request.kind === 'close') return { closed: await close(request.transfer_id) }
-      if (signal?.aborted && request.kind === 'next') await close(request.transfer_id)
+      if (request.kind === 'close') {
+        const entry = active.get(request.transfer_id)
+        if (entry && !sameScope(entry.request, request)) invalid()
+        return { closed: await close(request.transfer_id) }
+      }
+      if (signal?.aborted && request.kind === 'next') {
+        const entry = active.get(request.transfer_id)
+        if (!entry || !sameScope(entry.request, request)) invalid()
+        await close(request.transfer_id)
+      }
       signal?.throwIfAborted()
       if (request.kind === 'open') {
         for (const entry of active.values()) if (entry.expiresAt <= now()) await close(entry.id)
@@ -89,7 +98,8 @@ export function createRemoteBotChatAttachmentTransfers({ select, current, confir
           total_bytes: selected.item.ref.bytes, source: 'authority' }
       }
       const entry = active.get(request.transfer_id)
-      if (!entry || entry.busy || entry.expiresAt <= now() || entry.offset !== request.offset) {
+      if (!entry || !sameScope(entry.request, request) || entry.busy ||
+          entry.expiresAt <= now() || entry.offset !== request.offset) {
         if (entry?.expiresAt <= now()) await close(request.transfer_id)
         invalid()
       }
