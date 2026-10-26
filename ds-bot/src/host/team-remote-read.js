@@ -5,7 +5,9 @@ import { lstat, open, readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createGroupHistory } from './group-history.js'
 import { readBoundedSourceSession } from './team-import-source.js'
-import { projectRemoteBotChat, projectRemoteBotChatAttachments } from './team-remote-bot-chat-page.js'
+import { projectRemoteBotChat, projectRemoteBotChatAttachments,
+  selectRemoteBotChatAttachment } from './team-remote-bot-chat-page.js'
+import { createRemoteBotChatAttachmentTransfers } from './team-remote-bot-chat-transfer.js'
 const SCHEMA = 'dsh-remote-bot-read/v1'
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,122}$/u
 const CURSOR = /^[A-Za-z0-9_-]{1,512}$/u
@@ -233,11 +235,44 @@ export function projectRemoteTeam(state, request, now = Date.now) {
 
 export function install(rt) {
   const history = createGroupHistory(rt.home, () => false)
+  const transfers = createRemoteBotChatAttachmentTransfers({ ctx: rt.ctx,
+    select: async target => {
+      const committed = JSON.parse(await readFile(rt.statePath, 'utf8'))
+      return selectRemoteBotChatAttachment(committed, target,
+        id => readBoundedSourceSession(rt.ctx, id))
+    },
+    current: async selected => {
+      await rt.refresh()
+      const bot = rt.state?.bots?.[selected.logicalId.slice(4)]
+      const parts = bot && [...new Set([bot.id,
+        ...(bot.segments ?? []).map(part => part?.sessionId), bot.sessionId ?? bot.id])]
+      return rt.exclusiveWriter() && rt.state.revision === selected.teamRevision &&
+        parts?.[selected.part] === selected.sessionId
+    },
+    confirm: async selected => {
+      const source = await readBoundedSourceSession(rt.ctx, selected.sessionId)
+      return source.digest === selected.source.digest && source.eventCount === selected.source.eventCount &&
+        rt.exclusiveWriter()
+    },
+  })
+  rt.ctx.effect(() => () => transfers.closeAll(), 'ds-bot: remote attachment transfers')
   rt.ctx.effect(() => rt.ctx.provide('dsBotSlarkRemoteRead', {
     async read(request, signal) {
       signal?.throwIfAborted()
       await rt.refresh()
       signal?.throwIfAborted()
+      if (request?.schema_version === 'dsh-remote-bot-attachment/v1') {
+        if (!rt.exclusiveWriter() && request?.kind !== 'close') {
+          throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
+        }
+        const result = await transfers.read(request, signal)
+        if (request?.kind !== 'close' && (signal?.aborted || !rt.exclusiveWriter())) {
+          await transfers.closeAll()
+          signal?.throwIfAborted()
+          throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
+        }
+        return result
+      }
       if (!rt.exclusiveWriter()) throw Object.assign(new Error('Bot team authority unavailable'), { code: 'bot/read-only' })
       if (request?.kind === 'team') return projectRemoteTeam(rt.state, request)
       if (request?.kind === 'memory') return projectRemoteMemory(rt.state, rt.home, request)

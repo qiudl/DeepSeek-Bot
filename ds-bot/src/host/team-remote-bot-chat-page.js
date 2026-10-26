@@ -146,6 +146,34 @@ export async function projectRemoteBotChatAttachments(state, request, readSessio
   return value
 }
 
+/** Resolve only a position that remains visible in the current team's pinned chat part. */
+export async function selectRemoteBotChatAttachment(state, target, readSession) {
+  if (!row(target) || typeof target.logicalId !== 'string' || !LOGICAL_ID.test(target.logicalId) ||
+      !Number.isSafeInteger(target.part) || target.part < 0 || target.part >= MAX_PARTS ||
+      typeof target.eventDigest !== 'string' || !DIGEST.test(target.eventDigest) ||
+      typeof target.manifestDigest !== 'string' || !DIGEST.test(target.manifestDigest) ||
+      !Number.isSafeInteger(target.eventSeq) || target.eventSeq < 0 ||
+      !Number.isSafeInteger(target.blockIndex) || target.blockIndex < 0 ||
+      typeof readSession !== 'function') invalid()
+  const ids = partsOf(state, target.logicalId)
+  if (target.part >= ids.length) invalid()
+  let source, manifest
+  try {
+    source = await readSession(ids[target.part])
+    manifest = inventoryVisibleBotChatAttachments(source.events, source.digest)
+  } catch (cause) {
+    if (cause?.message === 'Bot chat source changed') stale()
+    incomplete()
+  }
+  if (source.eventCount !== source.events.length || source.digest !== target.eventDigest ||
+      manifest.manifestDigest !== target.manifestDigest) stale()
+  const item = manifest.items.find(value => value.eventSeq === target.eventSeq &&
+    value.blockIndex === target.blockIndex)
+  if (!item) invalid()
+  return { source, logicalId: target.logicalId, part: target.part,
+    sessionId: ids[target.part], item, teamRevision: state.revision, partCount: ids.length }
+}
+
 export async function projectRemoteBotChat(state, request, readSession, now = Date.now) {
   const { logicalId, part, limit, cursor } = parseRemoteBotChatRead(request)
   const ids = partsOf(state, logicalId)

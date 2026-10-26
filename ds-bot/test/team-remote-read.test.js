@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -265,4 +266,46 @@ test('REQ-20261023-0001 private Bot chat service uses committed team and read-on
   assert.deepEqual(opened, [[id, 'read'], [id, 'read'], [id, 'read']])
   await assert.rejects(service.read(request), { code: 'bot/read-only' })
   assert.deepEqual(opened, [[id, 'read'], [id, 'read'], [id, 'read']])
+})
+
+test('REQ-20261023-0001 Profile service streams only a pinned visible Bot attachment', async t => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-remote-attachment-'))
+  const ctx = fakeContext()
+  const id = 'session-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+  const bytes = Buffer.from('visible attachment bytes')
+  const ref = { attachmentId: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    name: 'report.txt', bytes: bytes.length }
+  const events = [{ seq: 1, time: 1, type: 'user/message', data: { source: { kind: 'user' },
+    content: [{ type: 'file', attachment: ref }] } }]
+  ctx.sessionPersistence = {
+    stat: async session => ({ header: { id: session }, revision: 'r1',
+      eventCount: events.length, sizeBytes: 100 }),
+    open: async (session, access) => ({ id: session, access, header: { id: session },
+      read: async () => ({ events }), close: async () => {} }),
+  }
+  ctx.attachments = { readImage: async () => { throw Error('not image') },
+    readFileStream: async function* () { yield bytes } }
+  const rt = createRuntime(ctx, { home, github: false, diagnosticsFile: false })
+  t.after(async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true }) })
+  await rt.load()
+  rt.state.bots[id] = { id, name: 'Thanos', role: 'Main' }
+  rt.state.mainBotIds = [id]
+  await rt.save()
+  const service = ctx.get('dsBotSlarkRemoteRead')
+  const manifest = await service.read({ schema_version: 'dsh-remote-bot-read/v1',
+    kind: 'bot-chat-attachments', logical_id: `bot:${id}`, part: 0, limit: 100 })
+  const opened = await service.read({ schema_version: 'dsh-remote-bot-attachment/v1', kind: 'open',
+    logical_id: `bot:${id}`, part: 0, team_revision: manifest.team_revision,
+    event_digest: manifest.event_digest, manifest_digest: manifest.manifest_digest,
+    eventSeq: 1, blockIndex: 0 })
+  const page = await service.read({ schema_version: 'dsh-remote-bot-attachment/v1',
+    kind: 'next', transfer_id: opened.transfer_id, offset: 0 })
+  assert.equal(page.final, true)
+  assert.deepEqual(Buffer.from(page.chunk_base64, 'base64'), bytes)
+  assert.equal(page.attachment_id, ref.attachmentId)
+  writeFileSync(join(home, 'import-activation.pending.json'), '{}')
+  await assert.rejects(service.read({ schema_version: 'dsh-remote-bot-attachment/v1', kind: 'open',
+    logical_id: `bot:${id}`, part: 0, team_revision: manifest.team_revision,
+    event_digest: manifest.event_digest, manifest_digest: manifest.manifest_digest,
+    eventSeq: 1, blockIndex: 0 }), { code: 'bot/read-only' })
 })

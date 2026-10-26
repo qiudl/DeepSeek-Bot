@@ -112,6 +112,7 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'effect ds-bot: live feed route',
     'route GET /api/bot/feed',
     'effect ds-bot: live feed',
+    'effect ds-bot: remote attachment transfers',
     'effect ds-bot: remote read',
     'effect ds-bot: api route',
     'route POST /api/bot',
